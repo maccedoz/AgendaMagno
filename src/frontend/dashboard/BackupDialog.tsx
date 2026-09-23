@@ -16,7 +16,12 @@ export function BackupDialog({
     version: number;
     tasks: unknown[];
     groups: unknown[];
-    finance?: { categories: unknown[]; entries: unknown[]; templates?: unknown[] };
+    finance?: {
+      categories: unknown[];
+      entries: unknown[];
+      templates?: unknown[];
+      plan?: unknown[];
+    };
   } | null>(null);
   const [previewRevision, setPreviewRevision] = useState(data.settings.revision);
   const [password, setPassword] = useState('');
@@ -119,7 +124,7 @@ export function BackupDialog({
             </p>
             <p>
               {backup.version === 2
-                ? `Todos os lançamentos, categorias e modelos financeiros atuais serão substituídos por ${backup.finance!.entries.length} lançamentos, ${backup.finance!.categories.length} categorias e ${backup.finance!.templates?.length ?? 0} modelos do arquivo.`
+                ? `Todos os lançamentos, categorias e modelos financeiros atuais serão substituídos por ${backup.finance!.entries.length} lançamentos, ${backup.finance!.categories.length} categorias e ${backup.finance!.templates?.length ?? 0} modelos do arquivo.${backup.finance!.plan ? ` O planejamento atual será trocado pelos ${backup.finance!.plan.length} itens do arquivo.` : ' O planejamento atual será mantido.'}`
                 : 'Este arquivo é versão 1: o financeiro atual será preservado.'}
             </p>
             <p>

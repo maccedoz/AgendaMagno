@@ -15,6 +15,9 @@ export function parseMoney(value: string): number {
   return cents;
 }
 export const isFinance = (c: Command) => c.op.startsWith('finance_');
+// O resumo da semana não é operação financeira (não passa por financeCommand), mas soma
+// lançamentos: o serviço precisa carregá-los e a resposta, como a das finanças, não é reescrita.
+export const needsFinance = (c: Command) => isFinance(c) || c.op === 'week_summary';
 const kindLabel = (kind: 'income' | 'expense' | 'both') =>
   kind === 'both' ? 'receitas e despesas' : kind === 'income' ? 'receitas' : 'despesas';
 function required<T>(value: T | undefined, field: 'amount' | 'kind' | 'description') {
@@ -31,6 +34,7 @@ export function financeCommand(
   c: Command,
   channel: string,
   now: Date,
+  batch: Command[] = [c],
 ): { reply: string; changed: boolean } {
   const f = state.finance;
   if (!f) throw new DomainError('Dados financeiros indisponíveis. Atualize e tente novamente.');
@@ -237,9 +241,23 @@ export function financeCommand(
   } else if (['finance_update', 'finance_delete', 'finance_restore'].includes(c.op)) {
     const item = entry();
     if (c.op === 'finance_delete') {
+      // Um pedido como "apague os lançamentos do mercado" traz várias exclusões. A confirmação
+      // é uma só para o pedido inteiro: perguntar item por item obrigava a responder "sim" a
+      // cada lançamento, e o "sim" dado vale para todos (ver applyChoice).
+      const waiting = batch.filter((x) => x.op === 'finance_delete' && !x.confirmed);
+      const label = (ref: string | undefined) => {
+        const found = f.entries.filter(
+          (x) => x.id === ref || (ref && normalize(x.description) === normalize(ref)),
+        );
+        return found.length === 1
+          ? `${found[0].description}, ${money(found[0].amountCents)}`
+          : (ref ?? 'lançamento');
+      };
       if (!c.confirmed)
         throw new Ambiguity(
-          `Excluir ${item.description}, ${money(item.amountCents)}?`,
+          waiting.length > 1
+            ? `Excluir estes ${waiting.length} lançamentos?\n${waiting.map((x) => `- ${label(x.entry)}`).join('\n')}`
+            : `Excluir ${item.description}, ${money(item.amountCents)}?`,
           'confirmed',
           [
             { ref: 'true', label: 'Sim, excluir', keywords: ['sim', 'excluir'] },

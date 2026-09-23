@@ -1,4 +1,4 @@
-import { isFinance } from './finance/rules';
+import { needsFinance } from './finance/rules';
 import { loadFinance } from './finance/store';
 import { panelCommandsSchema } from './domain';
 import { randomUUID } from 'node:crypto';
@@ -89,7 +89,7 @@ export async function panelAction(commands: unknown, requestId: string, database
     }
     const { state: before } = await currentState(tx);
     const validated = panelCommandsSchema.parse(commands);
-    if (validated.some(isFinance)) before.finance = await loadFinance(tx);
+    if (validated.some(needsFinance)) before.finance = await loadFinance(tx);
     const result = execute(before, validated, 'panel');
     await saveState(tx, before, result.state);
     await tx.query(
@@ -210,7 +210,7 @@ export async function startChat(
             'Os dados mudaram durante a interpretação. Nenhuma ação deste pedido foi aplicada; reenvie a mensagem.',
             409,
           );
-        if (commands.some(isFinance)) before.finance = await loadFinance(tx);
+        if (commands.some(needsFinance)) before.finance = await loadFinance(tx);
         const result = execute(before, commands, 'web', new Date(message.created_at));
         await saveState(tx, before, result.state);
         const status = result.clarification ? 'clarification' : 'done';
@@ -222,7 +222,7 @@ export async function startChat(
           id: message.id,
           status,
           reply: result.reply,
-          natural: !commands.some(isFinance) && result.state.settings.naturalReply !== false,
+          natural: !commands.some(needsFinance) && result.state.settings.naturalReply !== false,
         };
       });
     } catch (error) {

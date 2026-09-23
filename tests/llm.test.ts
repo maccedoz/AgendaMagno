@@ -527,7 +527,7 @@ test('com IA cadastrada, mesmo frases em formato conhecido vão para a IA', asyn
   });
   assert.equal(enviado, frase);
   assert.deepEqual(commands, [
-    { op: 'create_task', title: 'proposta', group: 'infojr', dueDate: '2026-09-24' },
+    { op: 'create_task', title: 'Proposta', group: 'infojr', dueDate: '2026-09-24' },
   ]);
   // Formatos exatos e triviais também passam a consultar a IA.
   for (const trivial of ['ajuda', 'Anota: comprar pilhas', 'Finalizei #1']) {
@@ -1084,4 +1084,33 @@ test('conversa financeira recente não esconde tarefas e grupos do pedido seguin
   assert.match(prompt, /gastei 10 reais com uber/);
   assert.match(prompt, /Estudos/);
   assert.match(prompt, /Ler capítulo três/);
+});
+
+test('resposta a uma pergunta livre da IA volta junto com o pedido original', async () => {
+  await saveProvider(config(), database);
+  await database.query(
+    `INSERT INTO agenda_messages(id,external_id,channel,body,reply,status,received_at)
+     VALUES('pergunta-livre','pergunta-livre','web-pergunta',$1,$2,'clarification',$3)`,
+    ['crie uma tarefa de dentista', 'Para qual dia?', new Date().toISOString()],
+  );
+  let sistema = '';
+  await interpret(emptyState(), 'amanhã', 'web-pergunta', new Date(), database, {
+    fetch: async (_url, init) => {
+      sistema = JSON.parse(String(init.body)).messages[0].content;
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ commands: [{ op: 'create_task', title: 'dentista' }] }),
+            },
+          },
+        ],
+        usage: { total_tokens: 12 },
+      });
+    },
+  });
+  // Sem isto o "amanhã" chegava à IA como pedido novo, sem saber do dentista.
+  assert.match(sistema, /terminou com uma pergunta da agenda/);
+  assert.match(sistema, /crie uma tarefa de dentista/);
+  assert.match(sistema, /Para qual dia\?/);
 });

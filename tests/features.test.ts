@@ -11,7 +11,7 @@ import {
   type Command,
 } from '../src/backend/domain';
 import { commandsSchema } from '../src/backend/domain/types';
-import { queryDate, basicInterpret, stripFiller } from '../src/backend/interpreter';
+import { queryDate, basicInterpret, stripFiller, capitalize } from '../src/backend/interpreter';
 import { checkReply } from '../src/backend/llm';
 import { nextDue } from '../src/backend/domain/recurrence';
 import { createDatabase, loadState } from '../src/backend/db';
@@ -267,6 +267,14 @@ test('palavras de conversa não entram no título da tarefa', () => {
   assert.equal(stripFiller('tbm'), 'tbm');
   assert.equal(stripFiller('revisar o ok do cliente'), 'revisar o ok do cliente');
 });
+test('títulos e descrições começam com letra maiúscula', () => {
+  assert.equal(capitalize('comprar pão'), 'Comprar pão');
+  assert.equal(capitalize('ávila'), 'Ávila');
+  assert.equal(capitalize('“ler” isso'), '“Ler” isso');
+  // Marca com a segunda letra maiúscula não vira "IPhone".
+  assert.equal(capitalize('iPhone novo'), 'iPhone novo');
+  assert.equal(basicInterpret('Anota: comprar pilhas')?.[0]?.op, 'create_task');
+});
 test('reescrita da resposta só é aceita se preservar as linhas de tarefas', () => {
   const original =
     '2 tarefa(s) — para 24/09/2026. Página 1/1.\n#7 revisão sistemática — 24/09/2026\n#4 proposta — 24/09/2026';
@@ -369,4 +377,27 @@ test('migração escolhe o banco pela intenção declarada, não pelo modo do .e
     () => migrationTarget({ DATABASE_MODE: 'postgres' }),
     /Falta a conexão de migração/,
   );
+});
+
+test('excluir vários grupos faz uma pergunta só e a resposta vale para todos', () => {
+  const original = run(grouped(), [
+    { op: 'create_group', name: 'Casa' },
+    { op: 'create_task', title: 'Lavar louça', group: 'Casa' },
+  ]);
+  const pergunta = execute(
+    original,
+    [
+      { op: 'delete_group', group: 'Estudos' },
+      { op: 'delete_group', group: 'Casa' },
+    ],
+    'web',
+    now,
+  );
+  assert.equal(pergunta.clarification, true);
+  assert.match(pergunta.reply, /Os grupos Estudos \(2 tarefa\(s\)\), Casa \(1 tarefa\(s\)\)/);
+  const commands = pendingAnswer(pergunta.state, 'excluidas', 'web', now)!;
+  assert.ok(commands.every((c) => c.deleteTasks === true));
+  const feito = execute(pergunta.state, commands, 'web', now);
+  assert.equal(feito.clarification, false);
+  assert.equal(feito.state.groups.length, 0);
 });

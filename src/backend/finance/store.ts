@@ -7,6 +7,7 @@ import type {
   FinanceCategory,
   FinanceData,
   FinanceEntry,
+  FinancePlanItem,
   FinanceState,
   FinanceTemplate,
 } from './types';
@@ -24,13 +25,18 @@ export async function loadFinance(tx: Sql): Promise<FinanceState> {
       'SELECT data FROM agenda_finance_templates ORDER BY id',
     )
   ).rows.map((r) => r.data);
-  return { categories, entries, templates };
+  const plan = (
+    await tx.query<{ data: FinancePlanItem }>('SELECT data FROM agenda_finance_plan ORDER BY id')
+  ).rows.map((r) => r.data);
+  return { categories, entries, templates, plan };
 }
 export async function saveFinance(tx: Sql, before: FinanceState, after: FinanceState) {
-  for (const key of ['categories', 'entries', 'templates'] as const) {
+  for (const key of ['categories', 'entries', 'templates', 'plan'] as const) {
+    const items = after[key];
+    if (!items) continue;
     const table = `agenda_finance_${key}`;
-    const old = new Map(before[key].map((x) => [x.id, JSON.stringify(x)]));
-    for (const item of after[key]) {
+    const old = new Map((before[key] ?? []).map((x) => [x.id, JSON.stringify(x)]));
+    for (const item of items) {
       const json = JSON.stringify(item);
       if (old.get(item.id) !== json)
         await tx.query(

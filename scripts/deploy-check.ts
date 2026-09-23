@@ -66,6 +66,15 @@ function checkEnvironment() {
   const cron = env('CRON_SECRET');
   if (!cron) warn('Sem CRON_SECRET, a limpeza diária da lixeira não roda. O resto funciona.');
   else if (cron.length < 32) fail('CRON_SECRET precisa de pelo menos 32 caracteres.');
+  const vapidKeys = ['VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT'].filter(env);
+  if (!vapidKeys.length)
+    warn(
+      'Sem chaves VAPID, os lembretes com o app fechado ficam desligados. Gere com npm run push:keys.',
+    );
+  else if (vapidKeys.length < 3)
+    fail('Configure VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY e VAPID_SUBJECT juntas, ou nenhuma delas.');
+  else if (!/^(mailto:|https:\/\/)/.test(env('VAPID_SUBJECT')))
+    fail('VAPID_SUBJECT precisa começar com mailto: (ou https://).');
   if (env('DATABASE_AUTO_MIGRATE') === 'true')
     fail(
       'DATABASE_AUTO_MIGRATE=true no app publicado. As migrações usam a conexão administrativa, separada; deixe esta variável em false.',

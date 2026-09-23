@@ -1,4 +1,10 @@
 import { financeSnapshot } from '@/backend/finance/store';
+import { summarySnapshot } from '@/backend/summary-store';
+import {
+  deleteFinancePlanItem,
+  financePlan,
+  saveFinancePlanItem,
+} from '@/backend/finance/plan-store';
 import {
   addNoteFile,
   deleteNote,
@@ -24,6 +30,7 @@ import { databaseHint } from '@/backend/db';
 import { DomainError } from '@/backend/domain';
 import { cleanup, clearChat, panelAction, snapshot, startChat } from '@/backend/service';
 import { deleteProvider, listProviders, resetProvider, saveProvider } from '@/backend/llm';
+import { pushInfo, sendTest, subscribe, sweepReminders, unsubscribe } from '@/backend/push';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -70,6 +77,12 @@ async function handler(request: Request, context: { params: Promise<{ path: stri
       cronAuth(request);
       return reply(await cleanup());
     }
+    // Chamado por um agendador externo a cada poucos minutos (o cron da Vercel no Hobby é
+    // diário), com o mesmo Authorization: Bearer CRON_SECRET da limpeza.
+    if (path === 'cron/reminders' && method === 'GET') {
+      cronAuth(request);
+      return reply(await sweepReminders());
+    }
     if (path === 'login' && method === 'POST') {
       sameOrigin(request);
       const result = await login(request, JSON.parse(await read(request)));
@@ -85,6 +98,10 @@ async function handler(request: Request, context: { params: Promise<{ path: stri
     if (method === 'GET' && path === 'backup') return reply(await exportBackup());
     if (method === 'GET' && path === 'finance')
       return reply(await financeSnapshot(Object.fromEntries(new URL(request.url).searchParams)));
+    if (method === 'GET' && path === 'finance/plan')
+      return reply(await financePlan(Object.fromEntries(new URL(request.url).searchParams)));
+    if (method === 'GET' && path === 'summary')
+      return reply(await summarySnapshot(Object.fromEntries(new URL(request.url).searchParams)));
     if (method === 'GET' && path === 'notes')
       return reply(await listNotes(Object.fromEntries(new URL(request.url).searchParams)));
     if (method === 'GET' && path === 'notes/note')
@@ -93,6 +110,7 @@ async function handler(request: Request, context: { params: Promise<{ path: stri
       return reply(await readNoteFile(Object.fromEntries(new URL(request.url).searchParams)));
     if (method === 'GET' && path === 'state') return reply(await snapshot());
     if (method === 'GET' && path === 'llm-providers') return reply(await listProviders());
+    if (method === 'GET' && path === 'push') return reply(await pushInfo());
     if (method !== 'POST') throw new DomainError('Rota não encontrada.', 404);
     sameOrigin(request);
     if (path === 'logout') {
@@ -132,11 +150,16 @@ async function handler(request: Request, context: { params: Promise<{ path: stri
       if (started.run) after(started.run);
       return reply(started.accepted);
     }
+    if (path === 'finance/plan') return reply(await saveFinancePlanItem(body));
+    if (path === 'finance/plan/delete') return reply(await deleteFinancePlanItem(body));
     if (path === 'notes') return reply(await saveNote(body));
     if (path === 'notes/delete') return reply(await deleteNote(body));
     if (path === 'notes/file') return reply(await addNoteFile(body));
     if (path === 'notes/file/delete') return reply(await deleteNoteFile(body));
     if (path === 'chat/clear') return reply(await clearChat());
+    if (path === 'push/subscribe') return reply(await subscribe(body, current.label));
+    if (path === 'push/unsubscribe') return reply(await unsubscribe(body));
+    if (path === 'push/test') return reply(await sendTest(body));
     if (path === 'llm-providers') return reply(await saveProvider(body));
     if (path === 'llm-providers/delete' || path === 'llm-providers/reset') {
       const { id } = z.object({ id: z.string().uuid() }).parse(body);

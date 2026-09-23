@@ -37,6 +37,7 @@ export const urgency = (t: Task) => {
 };
 export const labels: Record<string, string> = {
   notes: 'Anotações',
+  summary: 'Resumo da semana',
   finance: 'Financeiro',
   assistant: 'Assistente',
   calendar: 'Calendário',

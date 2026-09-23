@@ -7,6 +7,7 @@ import {
   ArrowRight,
   Check,
   CheckCheck,
+  ChartColumn,
   ChevronRight,
   Circle,
   Clock3,
@@ -59,9 +60,11 @@ import { GroupDialog, groupIcons } from './GroupDialog';
 import { SettingsDialog } from './SettingsDialog';
 import { Finance } from './Finance';
 import { Notes } from './Notes';
+import { WeeklySummary } from './WeeklySummary';
 import { Assistant } from './Assistant';
 import { ActivityDialog } from './ActivityDialog';
 import type { Data, Modal, View } from './types';
+import { REMINDER_WINDOW_MS, reminderTag } from '@/shared/reminders';
 
 export default function Dashboard() {
   const [auth, setAuth] = useState<boolean | null>(null);
@@ -222,6 +225,26 @@ export default function Dashboard() {
     setSelected([]);
   }, [view, search, priority, status, tag]);
   useEffect(() => {
+    // Atalhos só valem fora de campos de texto e sem janela aberta, para nunca engolir o que a
+    // pessoa está digitando. Esc já fecha as janelas pelo próprio <dialog>.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || modal) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        setModal({ type: 'task' });
+      } else if (e.key === '/') {
+        const box = document.querySelector<HTMLInputElement>('[data-shortcut-search]');
+        if (!box) return;
+        e.preventDefault();
+        box.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [modal]);
+  useEffect(() => {
     if (!notice || notice.error) return;
     const timer = setTimeout(() => setNotice(null), 6500);
     return () => clearTimeout(timer);
@@ -238,8 +261,13 @@ export default function Dashboard() {
       for (const task of data.tasks) {
         if (task.id < 0 || data.groups.some((g) => g.id === task.groupId && g.archivedAt)) continue;
         const at = reminderAt(task);
-        if (at === null || at > Date.now() || Date.now() - at > 86400000) continue;
-        const key = `agenda:reminder:${task.id}:${at}`;
+        // Com o push ativo neste aparelho, o servidor já entregou o que passou da janela da
+        // varredura: repetir ao abrir a agenda seria aviso em dobro. Dentro da janela, a tag igual
+        // à do push faz o navegador trocar um aviso pelo outro sem alertar de novo.
+        const limit =
+          localStorage.getItem('agenda:push') === 'true' ? REMINDER_WINDOW_MS : 86400000;
+        if (at === null || at > Date.now() || Date.now() - at > limit) continue;
+        const key = reminderTag(task.id, at);
         if (localStorage.getItem(key)) continue;
         try {
           const registration =
@@ -403,6 +431,7 @@ export default function Dashboard() {
           {navItem('assistant', 'Assistente', <MessageCircle size={18} />)}
           {navItem('finance', 'Financeiro', <LayoutGrid size={18} />)}
           {navItem('notes', 'Anotações', <NotebookPen size={18} />)}
+          {navItem('summary', 'Resumo da semana', <ChartColumn size={18} />)}
           {navItem('all', 'Todas as tarefas', <LayoutGrid size={18} />, active.length)}
           {navItem(
             'inbox',
@@ -551,7 +580,7 @@ export default function Dashboard() {
           </div>
         </header>
         <main className={`main-content${view === 'assistant' ? ' assistant-main' : ''}`}>
-          {view !== 'assistant' && view !== 'finance' && view !== 'notes' && (
+          {view !== 'assistant' && view !== 'finance' && view !== 'notes' && view !== 'summary' && (
             <>
               <section className="page-heading">
                 <div>
@@ -586,7 +615,12 @@ export default function Dashboard() {
                   >
                     <RefreshCw size={18} className={loading ? 'spin' : ''} />
                   </button>
-                  <button className="button primary" onClick={() => setModal({ type: 'task' })}>
+                  <button
+                    className="button primary"
+                    title="Nova tarefa (atalho: N)"
+                    aria-keyshortcuts="N"
+                    onClick={() => setModal({ type: 'task' })}
+                  >
                     <Plus size={18} />
                     Nova tarefa
                   </button>
@@ -684,6 +718,8 @@ export default function Dashboard() {
             />
           ) : view === 'notes' ? (
             <Notes offline={isOffline} />
+          ) : view === 'summary' ? (
+            <WeeklySummary offline={isOffline} revision={data?.settings.revision ?? 0} />
           ) : view === 'archived' ? (
             <section className="archive-list">
               <h2>Grupos arquivados</h2>
@@ -734,6 +770,8 @@ export default function Dashboard() {
                     type="search"
                     placeholder="Buscar título ou descrição…"
                     aria-label="Buscar tarefas"
+                    aria-keyshortcuts="/"
+                    data-shortcut-search
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
@@ -1064,6 +1102,9 @@ export default function Dashboard() {
             <span>
               <span className="footer-dot" />
               Seu espaço, no seu ritmo.
+              <span className="shortcut-hint">
+                Atalhos: <kbd>N</kbd> nova tarefa · <kbd>/</kbd> buscar · <kbd>Esc</kbd> fechar
+              </span>
             </span>
             <button className="text-button" onClick={() => setModal({ type: 'activity' })}>
               Atividade{issueCount > 0 && <span className="count-pill">{issueCount}</span>}

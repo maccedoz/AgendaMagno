@@ -10,6 +10,7 @@ import type {
 import { api } from './api';
 import { today } from './format';
 import { Dialog } from './Dialog';
+import { FinancePlan } from './FinancePlan';
 const money = (v: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v / 100);
 const dateLabel = (v: string) => v.split('-').reverse().join('/');
@@ -63,6 +64,7 @@ export function Finance({
   const [busy, setBusy] = useState(false),
     [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
+  const [tab, setTab] = useState<'entries' | 'plan'>('entries');
   const [error, setError] = useState(''),
     [notice, setNotice] = useState('');
   const [entry, setEntry] = useState<FinanceEntry | 'new' | null>(null);
@@ -174,6 +176,24 @@ export function Finance({
           </button>
         </div>
       </div>
+      <div className="finance-tabs" role="tablist" aria-label="Seções do financeiro">
+        {(
+          [
+            ['entries', 'Lançamentos'],
+            ['plan', 'Planejamento'],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={tab === id}
+            className={tab === id ? 'active' : ''}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="finance-filters">
         <label>
           Mês
@@ -215,47 +235,56 @@ export function Finance({
             ))}
           </select>
         </label>
-        <label>
-          De
-          <input
-            type="date"
-            value={fromDate}
-            onChange={(e) => filter(() => setFrom(e.target.value))}
-          />
-        </label>
-        <label>
-          Até
-          <input type="date" value={toDate} onChange={(e) => filter(() => setTo(e.target.value))} />
-        </label>
-        <label>
-          Tipo
-          <select
-            aria-label="Tipo do filtro"
-            value={kind}
-            onChange={(e) => filter(() => setKind(e.target.value))}
-          >
-            <option value="">Receitas e despesas</option>
-            <option value="income">Receitas</option>
-            <option value="expense">Despesas</option>
-          </select>
-        </label>
-        <label>
-          Categoria
-          <select
-            aria-label="Categoria do filtro"
-            value={category}
-            onChange={(e) => filter(() => setCategory(e.target.value))}
-          >
-            <option value="">Todas as categorias</option>
-            {data?.categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-                {c.archivedAt ? ' (arquivada)' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
+        {tab === 'entries' && (
+          <>
+            <label>
+              De
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => filter(() => setFrom(e.target.value))}
+              />
+            </label>
+            <label>
+              Até
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => filter(() => setTo(e.target.value))}
+              />
+            </label>
+            <label>
+              Tipo
+              <select
+                aria-label="Tipo do filtro"
+                value={kind}
+                onChange={(e) => filter(() => setKind(e.target.value))}
+              >
+                <option value="">Receitas e despesas</option>
+                <option value="income">Receitas</option>
+                <option value="expense">Despesas</option>
+              </select>
+            </label>
+            <label>
+              Categoria
+              <select
+                aria-label="Categoria do filtro"
+                value={category}
+                onChange={(e) => filter(() => setCategory(e.target.value))}
+              >
+                <option value="">Todas as categorias</option>
+                {data?.categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                    {c.archivedAt ? ' (arquivada)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
       </div>
+      {tab === 'plan' && <FinancePlan month={month} offline={offline} reload={reload + revision} />}
       {error && (
         <p className="form-error" role="alert">
           {error}
@@ -263,7 +292,7 @@ export function Finance({
       )}
       {notice && <p role="status">{notice}</p>}
       {loading && <p role="status">Atualizando financeiro…</p>}
-      {data && (
+      {tab === 'entries' && data && (
         <>
           <div className="finance-cards" aria-label="Resumo financeiro">
             <article>

@@ -46,6 +46,35 @@ export const templateSchema = z
     updatedAt: z.string().datetime(),
   })
   .strict();
+// Planejamento: renda prevista, gastos fixos e limites por categoria. É um plano mensal que
+// fica parado, não um lançamento — nunca entra em totais, painéis nem no resultado do mês.
+// O limite de uma categoria não tem nome próprio: é identificado pela categoria.
+export const planItemSchema = z
+  .object({
+    id: z.string().uuid(),
+    kind: z.enum(['income', 'fixed', 'budget']),
+    name: z.string().trim().max(100),
+    amountCents: z.number().int().positive().max(MAX_CENTS),
+    categoryId: z.string().uuid().nullable(),
+    version: z.number().int().positive(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict()
+  .refine((x) => (x.kind === 'budget' ? x.categoryId !== null : x.name.length > 0), {
+    message: 'Item de planejamento sem nome ou sem categoria.',
+  })
+  .refine((x) => x.kind !== 'income' || x.categoryId === null, {
+    message: 'Renda prevista não tem categoria.',
+  });
+export type FinancePlanItem = z.infer<typeof planItemSchema>;
+export type FinancePlanData = {
+  month: string;
+  items: FinancePlanItem[];
+  categories: FinanceCategory[];
+  // Só o que foi lançado de verdade no mês, para comparar com o plano.
+  real: { income: number; expense: number; byCategory: { id: string; expense: number }[] };
+};
 export type FinanceCategory = z.infer<typeof categorySchema>;
 export type FinanceTemplate = z.infer<typeof templateSchema>;
 export type FinanceEntry = z.infer<typeof entrySchema>;
@@ -53,6 +82,9 @@ export type FinanceState = {
   categories: FinanceCategory[];
   entries: FinanceEntry[];
   templates: FinanceTemplate[];
+  // Opcional porque estados montados antes do planejamento (e backups antigos) não o trazem;
+  // ausente significa “não mexer”, não “apagar”.
+  plan?: FinancePlanItem[];
 };
 export type FinanceTotals = { income: number; expense: number; result: number };
 export type FinanceData = {

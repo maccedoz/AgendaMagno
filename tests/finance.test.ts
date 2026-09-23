@@ -8,6 +8,13 @@ import { parseMoney } from '../src/backend/finance/rules';
 import { financeSnapshot, loadFinance } from '../src/backend/finance/store';
 import { execute, pendingAnswer, type Command } from '../src/backend/domain';
 import { featureMigration } from '../src/backend/schema';
+import { budgetState, planSummary } from '../src/backend/finance/plan';
+import {
+  deleteFinancePlanItem,
+  financePlan,
+  saveFinancePlanItem,
+} from '../src/backend/finance/plan-store';
+import type { FinancePlanItem } from '../src/backend/finance/types';
 let db: Database;
 before(async () => {
   db = await createDatabase();
@@ -422,4 +429,227 @@ test('resposta longa demais a uma pergunta de valor explica o que fazer', async 
       ),
     /só com o valor/,
   );
+});
+test('excluir vários lançamentos pede uma confirmação só', async () => {
+  let state = await loadState(db, true);
+  for (const description of ['Pão', 'Café'])
+    state = execute(
+      state,
+      [
+        {
+          op: 'finance_create',
+          kind: 'expense',
+          amount: '5,00',
+          description,
+          category: 'Alimentação',
+        },
+      ],
+      'web',
+    ).state;
+  const result = execute(
+    state,
+    [
+      { op: 'finance_delete', entry: 'Pão' },
+      { op: 'finance_delete', entry: 'Café' },
+    ],
+    'web',
+  );
+  assert.equal(result.clarification, true);
+  assert.match(result.reply, /Excluir estes 2 lançamentos\?\n- Pão, R\$\s?5,00\n- Café/);
+  const confirmed = pendingAnswer(result.state, 'sim', 'web', new Date())!;
+  assert.ok(confirmed.every((c) => c.confirmed));
+  const done = execute(result.state, confirmed, 'web');
+  assert.equal(done.clarification, false);
+  const gone = done.state.finance!.entries.filter((e) => ['Pão', 'Café'].includes(e.description));
+  assert.ok(gone.every((e) => e.deletedAt));
+});
+
+test('cálculo planejado não desconta duas vezes o fixo e avisa a partir de 80% do limite', () => {
+  const at = '2026-09-01T00:00:00.000Z';
+  const moradia = randomUUID(),
+    comida = randomUUID();
+  const item = (
+    kind: FinancePlanItem['kind'],
+    name: string,
+    amountCents: number,
+    categoryId: string | null = null,
+  ): FinancePlanItem => ({
+    id: randomUUID(),
+    kind,
+    name,
+    amountCents,
+    categoryId,
+    version: 1,
+    createdAt: at,
+    updatedAt: at,
+  });
+  const items = [
+    item('income', 'Salário', 300000),
+    item('fixed', 'Aluguel', 120000, moradia),
+    item('fixed', 'Internet', 10000),
+    item('budget', '', 150000, moradia),
+    item('budget', '', 80000, comida),
+  ];
+  const summary = planSummary(items, {
+    income: 250000,
+    expense: 184000,
+    byCategory: [
+      { id: moradia, expense: 120000 },
+      { id: comida, expense: 64000 },
+    ],
+  });
+  assert.equal(summary.income, 300000);
+  assert.equal(summary.fixed, 130000);
+  assert.equal(summary.leftover, 170000);
+  assert.equal(summary.budgets, 230000);
+  // Moradia só acrescenta os 300,00 que passam do aluguel; Alimentação entra inteira.
+  assert.equal(summary.budgetsBeyondFixed, 110000);
+  assert.equal(summary.free, 60000);
+  assert.equal(summary.plannedExpense, 240000);
+  assert.deepEqual(
+    summary.budgetRows.map((r) => [r.percent, r.state]),
+    [
+      [80, 'warning'],
+      [80, 'warning'],
+    ],
+  );
+  assert.equal(budgetState(63999, 80000), 'ok');
+  assert.equal(budgetState(64000, 80000), 'warning');
+  assert.equal(budgetState(80000, 80000), 'warning');
+  assert.equal(budgetState(80001, 80000), 'over');
+  assert.equal(planSummary([]).free, 0);
+});
+test('planejamento fica fora dos totais reais, valida entradas e controla versão', async () => {
+  const month = '2027-03';
+  const before = await financeSnapshot({ month: '2026-09' }, db);
+  const salary = await saveFinancePlanItem(
+    { kind: 'income', name: 'Salário', amount: '3.000,00' },
+    db,
+  );
+  assert.equal(salary.amountCents, 300000);
+  assert.equal(salary.categoryId, null);
+  const moradia = '00000000-0000-4000-8000-000000000005';
+  const comida = '00000000-0000-4000-8000-000000000003';
+  const rent = await saveFinancePlanItem(
+    { kind: 'fixed', name: 'Aluguel', amount: '1.200,00', categoryId: moradia },
+    db,
+  );
+  await saveFinancePlanItem({ kind: 'fixed', name: 'Internet', amount: '100' }, db);
+  const food = await saveFinancePlanItem(
+    { kind: 'budget', amount: '500,00', categoryId: comida },
+    db,
+  );
+  assert.equal(food.name, '');
+  // Nada do plano aparece no resumo real, nem de outro mês.
+  assert.deepEqual(await financeSnapshot({ month: '2026-09' }, db), before);
+  for (const [input, message] of [
+    [{ kind: 'income', name: 'Extra', amount: '1,234' }, /Valor inválido/],
+    [{ kind: 'income', name: '', amount: '10' }, /nome da renda/],
+    [{ kind: 'fixed', amount: '10' }, /nome do gasto fixo/],
+    [{ kind: 'budget', amount: '10' }, /categoria do limite/],
+    [
+      { kind: 'budget', amount: '10', categoryId: '00000000-0000-4000-8000-000000000001' },
+      /categoria de despesa/,
+    ],
+    [{ kind: 'budget', amount: '10', categoryId: comida }, /já tem um limite/],
+    [{ kind: 'fixed', name: 'aluguel', amount: '10' }, /mesmo nome|com esse nome/],
+    [{ kind: 'fixed', name: 'Luz', amount: '0,00' }, /entre R\$/],
+  ] as const)
+    await assert.rejects(saveFinancePlanItem(input, db), message);
+  await assert.rejects(
+    saveFinancePlanItem({ kind: 'income', name: 'X', amount: '1', extra: true }, db),
+    (e: Error) => e.name === 'ZodError',
+  );
+  const edited = await saveFinancePlanItem(
+    {
+      id: rent.id,
+      kind: 'fixed',
+      name: 'Aluguel',
+      amount: '1.300,00',
+      categoryId: moradia,
+      expectedVersion: 1,
+    },
+    db,
+  );
+  assert.equal(edited.version, 2);
+  await assert.rejects(
+    saveFinancePlanItem(
+      { id: rent.id, kind: 'fixed', name: 'Aluguel', amount: '1,00', expectedVersion: 1 },
+      db,
+    ),
+    /alterado/,
+  );
+  await assert.rejects(
+    saveFinancePlanItem({ id: rent.id, kind: 'income', name: 'Aluguel', amount: '1,00' }, db),
+    /mudar o tipo/,
+  );
+  await act([
+    {
+      op: 'finance_create',
+      kind: 'expense',
+      amount: '450,00',
+      description: 'Mercado plano',
+      category: 'Alimentação',
+      date: `${month}-10`,
+    },
+    {
+      op: 'finance_create',
+      kind: 'income',
+      amount: '2.800,00',
+      description: 'Salário plano',
+      category: 'Salário',
+      date: `${month}-05`,
+    },
+    {
+      op: 'finance_create',
+      kind: 'expense',
+      amount: '99,00',
+      description: 'Fora do mês',
+      category: 'Alimentação',
+      date: '2027-04-01',
+    },
+  ]);
+  const plan = await financePlan({ month }, db);
+  assert.equal(plan.month, month);
+  assert.deepEqual(plan.real.income, 280000);
+  assert.deepEqual(plan.real.expense, 45000);
+  const summary = planSummary(plan.items, plan.real);
+  assert.equal(summary.leftover, 300000 - 140000);
+  assert.deepEqual(
+    summary.budgetRows.map((r) => [r.spent, r.percent, r.state]),
+    [[45000, 90, 'warning']],
+  );
+  await assert.rejects(deleteFinancePlanItem({ id: food.id, expectedVersion: 9 }, db), /alterado/);
+  await deleteFinancePlanItem({ id: food.id, expectedVersion: 1 }, db);
+  assert.equal((await financePlan({ month }, db)).items.length, 3);
+  await assert.rejects(deleteFinancePlanItem({ id: food.id }, db), /não encontrado/);
+});
+test('backup leva o planejamento e arquivo sem a lista preserva o atual', async () => {
+  const backup = await exportBackup(db);
+  const plan = backup.finance!.plan!;
+  assert.equal(plan.length, 3);
+  const withoutPlan = structuredClone(backup);
+  delete withoutPlan.finance!.plan;
+  await importBackup(withoutPlan, (await loadState(db)).settings.revision, db);
+  assert.equal((await loadFinance(db)).plan!.length, 3);
+  const replaced = structuredClone(backup);
+  replaced.finance!.plan = plan.filter((x) => x.kind === 'income');
+  await importBackup(replaced, (await loadState(db)).settings.revision, db);
+  assert.deepEqual(
+    (await loadFinance(db)).plan!.map((x) => x.name),
+    ['Salário'],
+  );
+  const broken = structuredClone(backup);
+  broken.finance!.plan!.push({
+    ...plan.find((x) => x.kind === 'fixed' && x.categoryId)!,
+    id: randomUUID(),
+    name: 'Outro',
+    categoryId: randomUUID(),
+  });
+  await assert.rejects(
+    importBackup(broken, (await loadState(db)).settings.revision, db),
+    /planejamento/,
+  );
+  await importBackup(backup, (await loadState(db)).settings.revision, db);
+  assert.equal((await loadFinance(db)).plan!.length, 3);
 });
