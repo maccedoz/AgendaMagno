@@ -51,7 +51,7 @@ Uma explicação sem termos técnicos de tudo o que o aplicativo faz hoje.
 
 **Avisos e uso no celular**
 
-- Escolher, em cada tarefa, com quanta antecedência quer ser avisado. O aviso aparece enquanto o aplicativo estiver aberto; não há aviso com o aplicativo fechado.
+- Escolher, em cada tarefa, com quanta antecedência quer ser avisado. O aviso aparece com o aplicativo aberto e, se você ativar os lembretes com o app fechado em cada aparelho, também com ele fechado (no iPhone, só com a agenda na tela de início).
 - Instalar na tela de início do celular e usar como se fosse um aplicativo.
 - Trabalhar sem internet nas tarefas: o que você criar ou mudar fica pendente e sobe sozinho quando a conexão voltar. Financeiro, anotações e assistente precisam de internet.
 
@@ -116,7 +116,10 @@ Nesse caso, o banco e o endereço vêm do `.env`; o banco local padrão fica em 
 | `PANEL_PASSWORD`      | Senha inicial para acessar o painel; dispensável se usar o hash abaixo                                                          |
 | `PANEL_PASSWORD_HASH` | Alternativa preferida à linha acima, no formato `sal:hash`, gerada por `npm run senha:hash`                                     |
 | `LLM_ENCRYPTION_KEY`  | Chave de 32 bytes: 64 caracteres hexadecimais ou base64; preserve-a entre deploys                                               |
-| `CRON_SECRET`         | Segredo aleatório de pelo menos 32 caracteres que autentica a limpeza diária da lixeira                                         |
+| `CRON_SECRET`         | Segredo aleatório de pelo menos 32 caracteres que autentica a limpeza diária da lixeira e a varredura de lembretes              |
+| `VAPID_PUBLIC_KEY`    | Opcional: chave pública dos lembretes com o app fechado, gerada por `npm run push:keys`                                         |
+| `VAPID_PRIVATE_KEY`   | Opcional: chave privada do mesmo par; nunca com prefixo `NEXT_PUBLIC_`                                                          |
+| `VAPID_SUBJECT`       | Opcional: contato para o serviço de push, como `mailto:voce@exemplo.com`                                                        |
 
 Prefira `PANEL_PASSWORD_HASH` no ambiente publicado: `npm run senha:hash` lê a senha pela entrada padrão, sem deixá-la no histórico do shell, e imprime a linha pronta para colar. Com o hash definido, remova `PANEL_PASSWORD` do projeto na Vercel — quem tiver acesso ao painel de variáveis não lerá sua senha. Trocar a senha é trocar essa variável e fazer um novo deploy.
 
@@ -186,7 +189,7 @@ Defina `CRON_SECRET` em produção: a Vercel envia automaticamente `Authorizatio
 - Referências recentes por conversa por 30 minutos, seleção de tarefas homônimas e continuação por “mostrar mais”.
 - Login com cookie HttpOnly/SameSite, token aleatório armazenado somente como hash no servidor, verificação de origem e limite de tentativas. Sessão comum de 12 horas ou dispositivo confiável por 90 dias. Logout/revogação invalidam o acesso no servidor.
 - Calendário semanal/mensal, com reagendamento ao arrastar uma tarefa e edição de data nos detalhes. Atualização automática a cada 15 segundos enquanto a página está visível, além do retorno à aba e reconexão.
-- Manifesto, ícones e service worker para instalar o webapp e habilitar o modo offline opcional. Notificações de lembretes enquanto a agenda está aberta; não há envio push com o aplicativo fechado.
+- Manifesto, ícones e service worker para instalar o webapp e habilitar o modo offline opcional. Notificações de lembretes enquanto a agenda está aberta e, com chaves VAPID e um agendador externo, também com o aplicativo fechado (Web Push).
 - Exportação e restauração de tarefas/grupos/configuração de retenção em JSON. O arquivo não inclui senhas, segredos de duas etapas nem chaves de IA.
 - Consultas no assistente por data exata ou intervalo; respostas com resumo, identificadores, títulos e prazos em linhas separadas. “Dia 24 do mês que vem” e nomes de mês são resolvidos pelo modelo, com a tabela de meses já calculada no contexto; o atalho fixo de data só age quando a mensagem cita um dia do mês corrente.
 - Conversa com o assistente como tela inicial do painel, em tela cheia: é o que abre ao entrar, e a lista de tarefas fica a um clique na navegação lateral.
@@ -196,7 +199,7 @@ Defina `CRON_SECRET` em produção: a Vercel envia automaticamente `Authorizatio
 - Anotações soltas com título, texto longo, busca e arquivos anexados no banco.
 - Modelos de lançamento no financeiro, para repetir com um clique o que é fixo todo mês.
 
-Áudio, contas para vários usuários e envio de notificações com o app fechado continuam fora desta versão; pedidos assim são recusados com “Não consigo fazer isso ainda.”. Não foram adicionados controle de contexto privado da IA, prévia das ações da IA ou histórico detalhado de consumo por chamada.
+Áudio e contas para vários usuários continuam fora desta versão; pedidos assim são recusados com “Não consigo fazer isso ainda.”. Não foram adicionados controle de contexto privado da IA, prévia das ações da IA ou histórico detalhado de consumo por chamada.
 
 ## Modo reserva: quando não há IA cadastrada
 
@@ -278,6 +281,9 @@ src/backend/                  Regras, dados e integrações — nada de JSX aqui
   schema.ts                     Schema idempotente
   interpreter.ts                Interpretação com IA e o modo reserva sem IA
   service.ts                    Execução de ações e limpeza
+  push.ts                       Inscrições Web Push e varredura de lembretes com o app fechado
+
+src/shared/                   Regras puras usadas pelo navegador e pelo servidor (horário do lembrete)
 
 vercel.json                   Limpeza diária em produção
 tests/                        Testes de regras, integração e navegador
@@ -311,11 +317,40 @@ Ative **Permitir acesso offline neste dispositivo** nas configurações enquanto
 
 É possível criar, editar, concluir, descartar e restaurar tarefas offline. As mudanças ficam identificadas como pendentes, sobrevivem a recarregamentos e são enviadas na ordem quando o app volta à conexão. IDs de requisição evitam execução duplicada após falhas de rede. Alterações concorrentes geram conflito, interrompem a fila e oferecem descartar as pendências e refazer a edição com os dados atuais. Tarefas criadas offline ficam editáveis após sincronizar. Gerenciamento de grupos, importação, segurança, financeiro e execução do assistente exigem internet. O cache offline guarda tarefas e grupos; conversas e histórico financeiro ficam fora dele. Abra e recarregue o app conectado uma vez para preparar os arquivos de navegação offline. Para testar isso localmente, use `npm run build` e `npm start`; o servidor de desenvolvimento depende de conexão para inicializar sua interface.
 
-Em cada tarefa, escolha a antecedência do lembrete. Nas configurações, ative notificações e aceite a permissão do navegador. Os avisos usam o título da tarefa; sem horário, consideram 09:00 em `America/Bahia`. São verificados a cada 30 segundos enquanto o app está aberto, inclusive avisos atrasados em até 24 horas; grupos arquivados e tarefas concluídas/descartadas não notificam. Abas em segundo plano podem sofrer atrasos do navegador. Não há envio com o app fechado. [Limites e funcionamento das notificações](https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API).
+Em cada tarefa, escolha a antecedência do lembrete. Nas configurações, ative notificações e aceite a permissão do navegador. Os avisos usam o título da tarefa; sem horário, consideram 09:00 em `America/Bahia`. São verificados a cada 30 segundos enquanto o app está aberto, inclusive avisos atrasados em até 24 horas; grupos arquivados e tarefas concluídas/descartadas não notificam. Abas em segundo plano podem sofrer atrasos do navegador. Para avisar com o app fechado, veja a seção abaixo. [Limites e funcionamento das notificações](https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API).
+
+## Lembretes com o app fechado
+
+Com Web Push, o servidor entrega o lembrete ao aparelho mesmo com a agenda fechada. Cada aparelho se inscreve em **Configurações → Lembretes com o app fechado** (“Ativar neste aparelho” pede a permissão de notificações), e “Enviar teste” confere a entrega. No iPhone e no iPad, só funciona com a agenda adicionada à tela de início (Compartilhar → Adicionar à Tela de Início, iOS 16.4 ou mais recente) e aberta por esse ícone. [Web Push no iOS](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/).
+
+1. Gere as chaves uma vez com `npm run push:keys` e cadastre `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` e `VAPID_SUBJECT` (seu `mailto:`) no `.env` e na Vercel. Sem as três, a seção das configurações avisa que o servidor não tem as chaves e o resto do app funciona normalmente. Trocar as chaves invalida as inscrições: cada aparelho precisa ativar de novo.
+2. Aplique `npm run db:migrate` (tabelas `agenda_push_subscriptions` e `agenda_push_sent`) e, num papel `agenda_runtime` já existente, o GRANT abaixo.
+3. Agende a varredura. `GET /api/cron/reminders` envia os lembretes vencidos nos últimos 15 minutos — tarefa não concluída nem descartada, fora de grupo arquivado — e registra cada envio por tarefa e horário, para que nenhum lembrete saia duas vezes. O cron da Vercel no plano Hobby roda só uma vez por dia, então use um agendador externo gratuito chamando a rota **a cada 1 a 5 minutos** com o cabeçalho `Authorization: Bearer SEU_CRON_SECRET` (o mesmo valor de `CRON_SECRET`; sem ele a rota responde 401). A limpeza diária do `vercel.json` continua igual.
+
+   - [cron-job.org](https://cron-job.org): crie um job com a URL `https://sua-agenda.vercel.app/api/cron/reminders`, intervalo de 1 a 5 minutos e, em **Advanced → Headers**, `Authorization` = `Bearer SEU_CRON_SECRET`.
+   - GitHub Actions: guarde o segredo como `CRON_SECRET` nos secrets do repositório e crie `.github/workflows/lembretes.yml` com um `schedule` (o GitHub aceita no mínimo 5 minutos e pode atrasar em horários de pico):
+
+     ```yaml
+     on:
+       schedule: [{ cron: '*/5 * * * *' }]
+     jobs:
+       lembretes:
+         runs-on: ubuntu-latest
+         steps:
+           - run: curl -fsS -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" https://sua-agenda.vercel.app/api/cron/reminders
+     ```
+
+A resposta traz quantos lembretes saíram e quantas entregas falharam. Aparelhos que desfizeram a inscrição (o serviço de push responde 404/410) são removidos na hora; falha passageira em todos os aparelhos devolve o lembrete para a próxima varredura, enquanto ele estiver na janela. Um lembrete atrasado mais de 15 minutos — agendador parado, por exemplo — não é enviado por push.
+
+Com a agenda aberta no mesmo aparelho, o aviso da tela e o push usam a mesma identificação, e o navegador substitui um pelo outro sem alertar duas vezes. Com o push ativo no aparelho, a tela aberta deixa de repetir lembretes com mais de 15 minutos de atraso, que o servidor já entregou.
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON agenda_push_subscriptions, agenda_push_sent TO agenda_runtime;
+```
 
 ## Exportação e restauração
 
-Use **Configurações → Exportar e restaurar**. Antes de restaurar, baixe uma cópia da agenda atual. O backup exportado é versão 2 e inclui categorias e lançamentos financeiros, inclusive excluídos. O painel mostra a contagem de grupos e tarefas e exige confirmação e senha (e duas etapas, se ativa). O servidor valida o formato, limites, referências e a revisão da agenda; uma edição concorrente interrompe a restauração. Importar substitui tarefas, grupos e retenção e limpa histórico de ações/conversa. Na versão 2, a prévia também informa a substituição de todas as categorias e lançamentos financeiros. Arquivos da versão 1 continuam aceitos e preservam o financeiro existente. Credenciais, modelos e sessões não são importados. O limite do arquivo é 2 MB, até 10 mil tarefas, mil grupos, 10 mil lançamentos e mil categorias. O backup PostgreSQL continua sendo necessário para recuperar todos os dados administrativos e as chaves criptografadas.
+Use **Configurações → Exportar e restaurar**. Antes de restaurar, baixe uma cópia da agenda atual. O backup exportado é versão 2 e inclui categorias, lançamentos financeiros (inclusive excluídos), modelos e o planejamento. Arquivos sem a lista de planejamento mantêm o planejamento atual ao serem restaurados. O painel mostra a contagem de grupos e tarefas e exige confirmação e senha (e duas etapas, se ativa). O servidor valida o formato, limites, referências e a revisão da agenda; uma edição concorrente interrompe a restauração. Importar substitui tarefas, grupos e retenção e limpa histórico de ações/conversa. Na versão 2, a prévia também informa a substituição de todas as categorias e lançamentos financeiros. Arquivos da versão 1 continuam aceitos e preservam o financeiro existente. Credenciais, modelos e sessões não são importados. O limite do arquivo é 2 MB, até 10 mil tarefas, mil grupos, 10 mil lançamentos e mil categorias. O backup PostgreSQL continua sendo necessário para recuperar todos os dados administrativos e as chaves criptografadas.
 
 ## Permissões do banco
 
@@ -353,6 +388,8 @@ A prévia de descrição das tarefas aparece também no celular. Toque no item p
 
 Abra **Financeiro → Novo lançamento** para registrar receitas ou despesas recebidas/gastas. Valores são em BRL, no formato `1.234,56`, entre R$ 0,01 e R$ 999.999.999,99, armazenados em centavos inteiros. Datas são civis, com referência de hoje em `America/Bahia`. Cadastre, renomeie, arquive ou reative categorias em **Gerenciar categorias**. Arquivar preserva os vínculos antigos; uma categoria com lançamentos não pode mudar para um tipo incompatível.
 
+A aba **Planejamento** guarda o plano do mês: renda prevista (salário), gastos fixos (aluguel, internet, com categoria opcional) e um limite de gasto por categoria de despesa. Esses valores não são lançamentos e nunca entram nos totais, gráficos, somas por categoria ou no resultado do mês. O cálculo planejado mostra renda prevista − gastos fixos = sobra planejada e, descontados os limites, quanto fica livre para gastar; o limite de uma categoria já inclui os fixos dela, para o aluguel não ser descontado duas vezes. Abaixo, o mês escolhido compara o plano com o que foi lançado: receitas e despesas reais contra as previstas e, em cada limite, uma barra com aviso a partir de 80% e estado de estouro acima de 100%. Diferente dos modelos de lançamento, que criam lançamentos reais ao serem usados. Itens do planejamento têm versão e recusam edição concorrente, como as categorias.
+
 O resumo mostra receitas, despesas e resultado mensal (receitas menos despesas), o que entrou e o que saiu em cada categoria — em duas listas separadas, para que uma receita não esconda um gasto da mesma categoria — e a evolução diária. Mês e ano são escolhidos em listas, e não em `input type="month"`, porque o Firefox não desenha o seletor desse campo. Selecione também intervalo, tipo ou categoria; clicar em uma categoria filtra os lançamentos por ela e pelo tipo correspondente. A lista tem páginas de 20 itens, e os totais consideram todo o período filtrado. Excluídos não entram nos gráficos e podem ser restaurados em **Ver excluídos**. A comparação usa o mês anterior ao início do período selecionado e os mesmos filtros de tipo/categoria.
 
 Em **Modelos de lançamento**, guarde o que se repete todo mês (aluguel, salário, mensalidade) com tipo, valor, descrição e categoria. **Lançar** abre o formulário já preenchido para você escolher a data e confirmar: o modelo não gera lançamento sozinho, não tem data e continua salvo depois de usado. Excluir um modelo não mexe nos lançamentos já feitos.
@@ -371,13 +408,13 @@ Anotações exigem conexão e **não entram no arquivo de exportação**. Restau
 
 ### Migração desta entrega
 
-Execute `npm run db:migrate` com a conexão administrativa antes de publicar. A migração acrescenta `agenda_finance_categories`, `agenda_finance_entries`, `agenda_finance_templates`, `agenda_notes` e `agenda_note_files`, seus índices e dez categorias iniciais, sem apagar tarefas nem duplicar categorias em execuções posteriores. Bancos locais aplicam a migração na inicialização.
+Execute `npm run db:migrate` com a conexão administrativa antes de publicar. A migração acrescenta `agenda_finance_categories`, `agenda_finance_entries`, `agenda_finance_templates`, `agenda_finance_plan`, `agenda_notes` e `agenda_note_files`, seus índices e dez categorias iniciais, sem apagar tarefas nem duplicar categorias em execuções posteriores. Bancos locais aplicam a migração na inicialização.
 
 Para um papel `agenda_runtime` já existente, execute somente o GRANT abaixo com a conexão administrativa (a criação do papel em `scripts/runtime-role.sql` é necessária apenas na primeira instalação):
 
 ```sql
 GRANT SELECT, INSERT, UPDATE, DELETE ON agenda_finance_categories, agenda_finance_entries,
-  agenda_finance_templates, agenda_notes, agenda_note_files TO agenda_runtime;
+  agenda_finance_templates, agenda_finance_plan, agenda_notes, agenda_note_files TO agenda_runtime;
 ```
 
 `npm run deploy:check` confere a presença das tabelas e os privilégios de leitura/escrita. Valide migração e permissões no PostgreSQL de homologação antes da publicação. Os testes locais usam PGlite e bancos temporários, sem modificar os dados reais.

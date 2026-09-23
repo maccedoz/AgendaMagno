@@ -49,12 +49,23 @@ CREATE TABLE IF NOT EXISTS agenda_sessions (
   expires_at timestamptz NOT NULL, last_seen timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS agenda_sessions_expiry ON agenda_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS agenda_push_subscriptions (
+  id text PRIMARY KEY, endpoint text NOT NULL UNIQUE, p256dh text NOT NULL, auth text NOT NULL,
+  label text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+  last_success_at timestamptz, last_failure_at timestamptz, last_error text
+);
+CREATE TABLE IF NOT EXISTS agenda_push_sent (
+  task_id bigint NOT NULL, reminder_at timestamptz NOT NULL,
+  sent_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (task_id, reminder_at)
+);
 UPDATE agenda_tasks SET data=data || '{"trashedAt":null,"purgeAt":null,"trashReason":null}'::jsonb
  WHERE data->>'status'='completed' AND data->>'trashReason'='completed';
 
 CREATE TABLE IF NOT EXISTS agenda_finance_categories (id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agenda_finance_entries (id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agenda_finance_templates (id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS agenda_finance_plan (id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agenda_notes (id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agenda_note_files (
   id text PRIMARY KEY,

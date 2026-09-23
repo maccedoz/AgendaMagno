@@ -22,7 +22,23 @@ self.addEventListener('fetch', event => {
     }
   })());
 });
+// Lembrete enviado pelo servidor (Web Push). A tag é a mesma do aviso da tela aberta: se a
+// agenda estiver aberta neste aparelho e também avisar, o navegador troca um pelo outro em
+// silêncio em vez de mostrar dois. Sempre exibe algo — o navegador exige aviso visível a cada push.
+self.addEventListener('push', event => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data && event.data.text() }; }
+  event.waitUntil(self.registration.showNotification(data.title || 'AgendaMagna · Lembrete', {
+    body: data.body || '',
+    icon: '/icon.svg',
+    tag: data.tag,
+    data: { url: data.url || '/' },
+  }));
+});
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  event.waitUntil(self.clients.matchAll({ type: 'window' }).then(windows => windows[0] ? windows[0].focus() : self.clients.openWindow('/')));
+  const target = new URL((event.notification.data && event.notification.data.url) || '/', self.location.origin);
+  // Só abre endereços do próprio app, mesmo que o conteúdo do push traga outro.
+  const url = target.origin === self.location.origin ? target.href : '/';
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windows => windows[0] ? windows[0].focus() : self.clients.openWindow(url)));
 });

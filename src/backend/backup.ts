@@ -1,4 +1,4 @@
-import { categorySchema, entrySchema, templateSchema } from './finance/types';
+import { categorySchema, entrySchema, planItemSchema, templateSchema } from './finance/types';
 import { z } from 'zod';
 import { db, loadState, lock, saveState, type Database } from './db';
 import { DomainError, emptyState, normalize } from './domain';
@@ -61,6 +61,8 @@ const backupV2 = backupV1.extend({
       entries: z.array(entrySchema).max(10000),
       // Arquivos da versão 2 gerados antes dos modelos de lançamento não têm esta lista.
       templates: z.array(templateSchema).max(1000).default([]),
+      // Sem a lista (arquivos anteriores ao planejamento), o planejamento atual é mantido.
+      plan: z.array(planItemSchema).max(1000).optional(),
     })
     .strict(),
 });
@@ -121,6 +123,18 @@ export async function importBackup(
       throw new DomainError('O arquivo contém categorias ou lançamentos duplicados.');
     if (new Set(value.finance.templates.map((t) => t.id)).size !== value.finance.templates.length)
       throw new DomainError('O arquivo contém modelos de lançamento duplicados.');
+    const plan = value.finance.plan ?? [];
+    const budgets = plan.filter((x) => x.kind === 'budget').map((x) => x.categoryId);
+    if (
+      new Set(plan.map((x) => x.id)).size !== plan.length ||
+      new Set(budgets).size !== budgets.length
+    )
+      throw new DomainError('O arquivo contém itens de planejamento duplicados.');
+    for (const item of plan) {
+      const kind = item.categoryId && categories.find((c) => c.id === item.categoryId)?.kind;
+      if (item.categoryId && (!kind || kind === 'income'))
+        throw new DomainError('Categoria inexistente ou incompatível no planejamento.');
+    }
     for (const entry of [...entries, ...value.finance.templates]) {
       const category = categories.find((c) => c.id === entry.categoryId);
       if (!category || (category.kind !== 'both' && category.kind !== entry.kind))

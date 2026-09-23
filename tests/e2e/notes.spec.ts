@@ -15,22 +15,27 @@ test('anotação guarda texto, anexa arquivo, encontra pela busca e some ao excl
     .click();
   await expect(page.getByRole('heading', { name: 'Anotações', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Nova anotação', exact: true }).click();
+  // O editor é a página inteira: nada de janela, e a busca da lista sai de cena.
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await expect(page.getByLabel('Buscar nas anotações')).not.toBeVisible();
   await page.getByLabel('Título').fill('Receita de bolo');
-  await page.getByLabel('Texto').fill('Farinha, ovos e paciência');
-  await page.getByRole('button', { name: 'Salvar anotação' }).click();
-  // A anotação nova continua aberta para receber anexos, sem precisar reabrir.
-  await expect(page.getByText('Anotação criada. Agora dá para anexar arquivos.')).toBeVisible();
-  await page.getByLabel(/Anexar arquivo/).setInputFiles({
+  await page.getByLabel('Texto').fill('Farinha e ovos');
+  // Anexar numa anotação nova salva o texto primeiro, sem pedir um passo a mais.
+  await page.getByLabel('Anexar arquivo').setInputFiles({
     name: 'lista.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('leite, açúcar, fermento'),
   });
+  await expect(page.getByText('Anotação criada. lista.txt anexado.')).toBeVisible();
   const attached = page.locator('.note-file-row').filter({ hasText: 'lista.txt' });
   await expect(attached).toBeVisible();
   const download = page.waitForEvent('download');
   await attached.getByRole('button', { name: 'Baixar', exact: true }).click();
   expect((await download).suggestedFilename()).toBe('lista.txt');
-  await page.getByRole('button', { name: 'Fechar sem salvar', exact: true }).click();
+  await page.getByLabel('Texto').fill('Farinha, ovos e paciência');
+  await page.getByRole('button', { name: 'Salvar anotação' }).click();
+  await expect(page.getByText('Anotação salva.')).toBeVisible();
+  await page.getByRole('button', { name: 'Voltar para anotações', exact: true }).click();
   const card = page.locator('.note-card').filter({ hasText: 'Receita de bolo' });
   await expect(card).toContainText('1 arquivo(s)');
 
@@ -41,6 +46,7 @@ test('anotação guarda texto, anexa arquivo, encontra pela busca e some ao excl
   await page.getByLabel('Buscar nas anotações').fill('');
 
   await card.click();
+  await expect(page.getByLabel('Título')).toHaveValue('Receita de bolo');
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Excluir anotação', exact: true }).click();
   await expect(card).not.toBeVisible();

@@ -188,6 +188,7 @@ export const commandSchema = z
       'settings',
       'set_retention',
       'set_natural_reply',
+      'week_summary',
       'undo',
       'help',
       'clarify',

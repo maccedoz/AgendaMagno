@@ -1,5 +1,6 @@
 import { financeCommand, isFinance } from '../finance/rules';
 import { randomUUID } from 'node:crypto';
+import { formatWeekSummary, resolveWeek, weekSummary } from '../summary';
 import { nextDue } from './recurrence';
 import { dueLabel, formatDate, normalize } from './format';
 import { contextFor, findGroup, findTask, selectTasks } from './lookup';
@@ -45,7 +46,7 @@ function validateSchedule(t: Task) {
 // estas palavras, sem passar por um modelo que poderia suavizá-la.
 export const UNSUPPORTED = 'Não consigo fazer isso ainda.';
 export const HELP =
-  'Você pode criar grupos e tarefas, editar, concluir, restaurar e consultar. Exemplos:\n• Crie um grupo chamado Estudos\n• Adicione ler capítulo 3 em Estudos\n• Anota: comprar pilhas\n• Finalizei #1\n• Restaure #1\n• O que vence hoje?\n• Quais tarefas estão na lixeira?\n• Exclua as tarefas da lixeira depois de 15 dias\n• Desfaça a última alteração\nUse o microfone do chat para ditar, revisar e enviar texto (não recebe arquivos de áudio). Com IA, registre receitas/despesas, categorias e consultas financeiras, por exemplo “Gastei 42,90 no almoço hoje”. O Financeiro também funciona por formulário. Para descrições e campos, use também o painel. Com uma IA cadastrada em Modelos de IA, você escreve do seu jeito, sem seguir esses formatos.';
+  'Você pode criar grupos e tarefas, editar, concluir, restaurar e consultar. Exemplos:\n• Crie um grupo chamado Estudos\n• Adicione ler capítulo 3 em Estudos\n• Anota: comprar pilhas\n• Finalizei #1\n• Restaure #1\n• O que vence hoje?\n• Quais tarefas estão na lixeira?\n• Exclua as tarefas da lixeira depois de 15 dias\n• Desfaça a última alteração\n• Resumo da semana (ou “como foi minha semana?”)\nUse o microfone do chat para ditar, revisar e enviar texto (não recebe arquivos de áudio). Com IA, registre receitas/despesas, categorias e consultas financeiras, por exemplo “Gastei 42,90 no almoço hoje”. O Financeiro também funciona por formulário. Para descrições e campos, use também o painel. Com uma IA cadastrada em Modelos de IA, você escreve do seu jeito, sem seguir esses formatos.';
 
 export function execute(
   original: State,
@@ -93,7 +94,7 @@ export function execute(
   try {
     for (const c of commands) {
       if (isFinance(c)) {
-        const result = financeCommand(state, c, channel, now);
+        const result = financeCommand(state, c, channel, now, commands);
         replies.push(result.reply);
         if (result.changed) mutation = barrier = true;
         commandIndex++;
@@ -117,6 +118,13 @@ export function execute(
             `A lixeira exclui tarefas após ${state.settings.retentionDays} dias. Alterações no prazo valem para novas entradas. Resposta em linguagem natural: ${state.settings.naturalReply === false ? 'desligada' : 'ligada'}.`,
           );
           break;
+        case 'week_summary': {
+          if (!state.finance)
+            throw new DomainError('Dados financeiros indisponíveis. Atualize e tente novamente.');
+          const start = resolveWeek(c.date ? { week: c.date } : {}, now);
+          replies.push(formatWeekSummary(weekSummary(state, state.finance, start, now)));
+          break;
+        }
         case 'set_natural_reply':
           state.settings.naturalReply = requireValue(c.enabled, 'ligada ou desligada');
           mutation = barrier = true;
@@ -169,9 +177,17 @@ export function execute(
           // frase inteira com a escolha. Como pergunta pendente, a resposta seguinte retoma a
           // exclusão de onde parou.
           if (c.op === 'delete_group' && c.deleteTasks === undefined) {
-            const count = state.tasks.filter((t) => t.groupId === group.id).length;
+            // Vários grupos no mesmo pedido recebem uma pergunta só, e a resposta vale para
+            // todos os que ainda não disseram o que fazer com as tarefas (ver applyChoice).
+            const others = commands
+              .filter((x) => x.op === 'delete_group' && x.deleteTasks === undefined && x !== c)
+              .map((x) => findGroupQuiet(state, x.group, ctx))
+              .filter((g): g is Group => Boolean(g) && g!.id !== group.id);
+            const count = (g: Group) => state.tasks.filter((t) => t.groupId === g.id).length;
             throw new Ambiguity(
-              `O grupo ${group.name} tem ${count} tarefa(s). O que fazer com elas? Responda com o número da opção:`,
+              others.length
+                ? `Os grupos ${[group, ...others].map((g) => `${g.name} (${count(g)} tarefa(s))`).join(', ')} serão excluídos. O que fazer com as tarefas deles? Responda com o número da opção:`
+                : `O grupo ${group.name} tem ${count(group)} tarefa(s). O que fazer com elas? Responda com o número da opção:`,
               'deleteTasks',
               [
                 {
@@ -537,6 +553,14 @@ export function execute(
   };
 }
 
+function findGroupQuiet(state: State, ref: string | null | undefined, ctx: Conversation) {
+  try {
+    return ref ? findGroup(state, ref, ctx) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function pendingAnswer(
   state: State,
   text: string,
@@ -613,14 +637,17 @@ function applyChoice(
   pending: NonNullable<Conversation['pending']>,
   choice: PendingOption,
 ): Command[] {
+  // A pergunta de exclusão cobre o pedido inteiro, então a resposta também.
   if (pending.field === 'confirmed') {
     if (choice.ref === 'false')
       return [
         { op: 'clarify', question: 'Exclusão cancelada. Envie o próximo pedido ou retome a fila.' },
       ];
-    commands[pending.index].confirmed = true;
-  } else if (pending.field === 'deleteTasks')
-    commands[pending.index].deleteTasks = choice.ref === 'true';
-  else Object.assign(commands[pending.index], { [pending.field]: choice.ref });
+    for (const c of commands) if (c.op === 'finance_delete') c.confirmed = true;
+  } else if (pending.field === 'deleteTasks') {
+    for (const c of commands)
+      if (c.op === 'delete_group' && c.deleteTasks === undefined)
+        c.deleteTasks = choice.ref === 'true';
+  } else Object.assign(commands[pending.index], { [pending.field]: choice.ref });
   return commands;
 }

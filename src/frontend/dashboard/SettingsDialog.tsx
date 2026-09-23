@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Check, MessageCircle, Monitor, Moon, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { offlineEnabled, remember, clearOffline, registerWorker } from './offline';
 import { Dialog } from './Dialog';
+import { PushSettings } from './PushSettings';
 import { applyTheme, readTheme, type Theme } from './theme';
 import type { Action, Data } from './types';
 
@@ -156,9 +157,10 @@ export function SettingsDialog({
           Ativar notificações de lembretes
         </label>
         <p className="field-help">
-          Os avisos usam o horário de cada tarefa e podem exibir seu título. Mantenha a agenda
-          aberta; esta versão não envia avisos com o aplicativo fechado.
+          Os avisos usam o horário de cada tarefa e podem exibir seu título. Esta opção avisa
+          enquanto a agenda está aberta; para avisar com ela fechada, ative a seção abaixo.
         </p>
+        <PushSettings />
         <div className="dialog-actions">
           <button className="button secondary" type="button" onClick={openSecurity}>
             Segurança e dispositivos

@@ -1,4 +1,4 @@
-import type { Command, Task } from '@/backend/domain';
+import type { Command } from '@/backend/domain';
 import type { Data } from './types';
 export type Pending = { id: string; commands: Command[]; at: string };
 type Saved = { data: Data; expiresAt: string };
@@ -151,19 +151,7 @@ export async function enqueue(commands: Command[], id: string) {
 export async function registerWorker() {
   if ('serviceWorker' in navigator) await navigator.serviceWorker.register('/sw.js');
 }
-export function reminderAt(task: Task) {
-  if (
-    !task.dueDate ||
-    task.reminderMinutes == null ||
-    task.trashedAt ||
-    task.status === 'completed'
-  )
-    return null;
-  return (
-    new Date(`${task.dueDate}T${task.dueTime ?? '09:00'}:00-03:00`).getTime() -
-    task.reminderMinutes * 60000
-  );
-}
+export { reminderAt } from '@/shared/reminders';
 
 export async function queueLock<T>(fn: () => Promise<T>): Promise<T> {
   return navigator.locks ? navigator.locks.request('agendamagno-queue', fn) : fn();

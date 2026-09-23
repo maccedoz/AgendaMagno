@@ -14,6 +14,7 @@ const EXAMPLES = [
   'Quais tarefas eu tenho pro dia 24?',
   'Adicione revisar o artigo em Estudos',
   'Finalizei #1',
+  'Como foi minha semana?',
 ];
 
 // Tela inicial do painel, não uma janela sobre ele: a conversa é por onde a maior parte dos
