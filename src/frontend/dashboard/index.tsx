@@ -1101,7 +1101,11 @@ export default function Dashboard() {
       )}
       {modal?.type === 'group' && (
         <GroupDialog
-          taskCount={tasks.filter((t) => t.groupId === modal.group?.id).length}
+          taskCount={
+            // As da lixeira não entram: a exclusão do grupo não mexe nelas, e contá-las aqui
+            // prometeria uma escolha sobre tarefas que vão ficar exatamente como estão.
+            tasks.filter((t) => t.groupId === modal.group?.id && !t.trashedAt).length
+          }
           group={modal.group}
           busy={busy}
           close={() => setModal(null)}

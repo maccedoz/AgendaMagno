@@ -264,3 +264,65 @@ test('pedido com dois comandos encadeados por "e" não é resolvido por um padr�
   );
   assert.equal(basicInterpret('exclua #1 e restaure #2'), null);
 });
+test('na lixeira só valem tirar e colocar: excluir o grupo não altera a tarefa descartada', () => {
+  let state = run(emptyState(), [
+    { op: 'create_group', name: 'Cálculo' },
+    { op: 'create_task', title: 'Lista 1', group: 'Cálculo' },
+    { op: 'create_task', title: 'Lista 2', group: 'Cálculo' },
+  ]);
+  state = run(state, [{ op: 'trash_task', task: '#1' }]);
+  const group = state.groups[0].id;
+  const discarded = structuredClone(state.tasks.find((t) => t.id === 1)!);
+  const before = state.history.filter((h) => h.taskId === 1).length;
+  const after = run(state, [{ op: 'delete_group', group: 'Cálculo', deleteTasks: true }]);
+  // Nem versão, nem grupo, nem linha de histórico: a tarefa na lixeira sai igual como entrou.
+  assert.deepEqual(
+    after.tasks.find((t) => t.id === 1),
+    discarded,
+  );
+  assert.equal(after.tasks.find((t) => t.id === 1)!.groupId, group);
+  assert.equal(after.history.filter((h) => h.taskId === 1).length, before);
+  // A ativa segue o pedido normalmente.
+  assert.ok(after.tasks.find((t) => t.id === 2)!.trashedAt);
+  assert.equal(after.tasks.find((t) => t.id === 2)!.groupId, null);
+});
+test('a pergunta da exclusão de grupo conta só as tarefas que ela vai afetar', () => {
+  let state = run(emptyState(), [
+    { op: 'create_group', name: 'Cálculo' },
+    { op: 'create_task', title: 'Lista 1', group: 'Cálculo' },
+    { op: 'create_task', title: 'Lista 2', group: 'Cálculo' },
+  ]);
+  state = run(state, [{ op: 'trash_task', task: '#1' }]);
+  const asked = execute(state, [{ op: 'delete_group', group: 'Cálculo' }], 'test', start);
+  assert.ok(asked.clarification);
+  assert.match(asked.reply, /1 tarefa\(s\)/);
+  const done = execute(
+    state,
+    [{ op: 'delete_group', group: 'Cálculo', deleteTasks: false }],
+    'test',
+    start,
+  );
+  assert.match(done.reply, /1 já na lixeira, mantida\(s\) como estava\(m\)/);
+});
+test('desfazer a exclusão do grupo devolve a tarefa que estava na lixeira para ele', () => {
+  let state = run(emptyState(), [
+    { op: 'create_group', name: 'Cálculo' },
+    { op: 'create_task', title: 'Lista 1', group: 'Cálculo' },
+  ]);
+  const group = state.groups[0].id;
+  state = run(state, [{ op: 'trash_task', task: '#1' }]);
+  state = run(state, [{ op: 'delete_group', group: 'Cálculo', deleteTasks: true }]);
+  assert.equal(state.groups.length, 0);
+  state = run(state, [{ op: 'undo' }]);
+  assert.equal(state.groups[0].id, group);
+  assert.equal(state.tasks.find((t) => t.id === 1)!.groupId, group);
+});
+test('editar e concluir continuam recusados enquanto a tarefa está na lixeira', () => {
+  const state = run(task(), [{ op: 'trash_task', task: '#1' }]);
+  assert.throws(() => run(state, [{ op: 'update_task', task: '#1', title: 'Outro' }]), /Restaure/);
+  assert.throws(() => run(state, [{ op: 'complete_task', task: '#1' }]), /Restaure/);
+  assert.match(execute(state, [{ op: 'trash_task', task: '#1' }], 'test', start).reply, /já está/);
+  const back = run(state, [{ op: 'restore_task', task: '#1' }]);
+  assert.equal(back.tasks[0].trashedAt, null);
+  assert.equal(back.tasks[0].status, 'pending');
+});

@@ -76,9 +76,15 @@ export function execute(
   let barrier = false;
   let mutation = false;
   let commandIndex = 0;
+  // Na lixeira valem duas transições, e só elas: colocar e retirar. A comparação é contra o
+  // estado do início do pedido, senão enviar para a lixeira — que altera a própria tarefa — se
+  // recusaria a si mesmo. Fica aqui porque é o único ponto por onde toda alteração de tarefa
+  // passa: um caminho novo que esqueça a regra esbarra nela em vez de reabrir a brecha.
   const touch = (t: Task, action: string) => {
-    if (!touched.has(t.id))
-      touched.set(t.id, structuredClone(original.tasks.find((old) => old.id === t.id) ?? null));
+    const before = original.tasks.find((old) => old.id === t.id) ?? null;
+    if (before?.trashedAt && t.trashedAt)
+      throw new DomainError(`#${t.id} está na lixeira. Restaure a tarefa antes de alterá-la.`);
+    if (!touched.has(t.id)) touched.set(t.id, structuredClone(before));
     t.version++;
     t.updatedAt = now.toISOString();
     state.history.push({
@@ -169,7 +175,9 @@ export function execute(
           // frase inteira com a escolha. Como pergunta pendente, a resposta seguinte retoma a
           // exclusão de onde parou.
           if (c.op === 'delete_group' && c.deleteTasks === undefined) {
-            const count = state.tasks.filter((t) => t.groupId === group.id).length;
+            // As da lixeira ficam de fora da pergunta porque também ficam de fora da exclusão:
+            // oferecer uma escolha sobre elas prometeria um efeito que não vai acontecer.
+            const count = state.tasks.filter((t) => t.groupId === group.id && !t.trashedAt).length;
             throw new Ambiguity(
               `O grupo ${group.name} tem ${count} tarefa(s). O que fazer com elas? Responda com o número da opção:`,
               'deleteTasks',
@@ -214,9 +222,14 @@ export function execute(
           touchGroup(group.id);
           if (c.op === 'delete_group') {
             let count = 0;
-            for (const task of state.tasks.filter((t) => t.groupId === group.id)) {
+            // O groupId das que estão na lixeira continua apontando para o grupo que sai. É de
+            // propósito: a tela já mostra "Caixa de entrada" quando o grupo não existe mais, e
+            // desfazer a exclusão devolve o grupo com elas dentro. Zerar o campo seria uma
+            // alteração na lixeira, e deixaria a tarefa órfã depois do desfazer.
+            const trashed = state.tasks.filter((t) => t.groupId === group.id && t.trashedAt).length;
+            for (const task of state.tasks.filter((t) => t.groupId === group.id && !t.trashedAt)) {
               task.groupId = null;
-              if (c.deleteTasks && !task.trashedAt) trash(task, state, now, false);
+              if (c.deleteTasks) trash(task, state, now, false);
               touch(
                 task,
                 c.deleteTasks
@@ -232,7 +245,7 @@ export function execute(
               delete context.lastQuery;
             }
             replies.push(
-              `Grupo ${group.name} excluído. ${count} tarefa(s) ${c.deleteTasks ? 'na lixeira' : 'preservada(s); tarefas ativas na Caixa de entrada'}.`,
+              `Grupo ${group.name} excluído. ${count} tarefa(s) ${c.deleteTasks ? 'na lixeira' : 'preservada(s); tarefas ativas na Caixa de entrada'}.${trashed ? ` ${trashed} já na lixeira, mantida(s) como estava(m).` : ''}`,
             );
           } else if (c.op === 'archive_group' || c.op === 'restore_group') {
             group.archivedAt = c.op === 'archive_group' ? now.toISOString() : null;
@@ -473,7 +486,9 @@ export function execute(
                 version: (change.after?.version ?? change.before.version ?? 0) + 1,
               });
             else
-              for (const t of state.tasks.filter((t) => t.groupId === change.id)) {
+              // Mesma razão da exclusão de grupo: o grupo some, e quem está na lixeira fica
+              // como estava. A tela já lê groupId desconhecido como Caixa de entrada.
+              for (const t of state.tasks.filter((t) => t.groupId === change.id && !t.trashedAt)) {
                 t.groupId = null;
                 touch(t, 'Grupo desfeito');
               }

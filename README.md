@@ -176,10 +176,11 @@ Defina `CRON_SECRET` em produção: a Vercel envia automaticamente `Authorizatio
 
 ## O que está implementado
 
-- Grupos: criar, renomear, personalizar cor/ícone/ordem, arquivar/restaurar e excluir. A exclusão oferece preservar tarefas (ativas na Caixa de entrada) ou enviá-las à lixeira. Tarefas já descartadas mantêm seu prazo. Caixa de entrada não é um grupo excluível.
+- Grupos: criar, renomear, personalizar cor/ícone/ordem, arquivar/restaurar e excluir. A exclusão oferece preservar tarefas (ativas na Caixa de entrada) ou enviá-las à lixeira, e a pergunta conta apenas as tarefas ativas. As que já estavam na lixeira não são tocadas: seguem vinculadas ao grupo excluído, e desfazer a exclusão devolve o grupo com elas dentro. Caixa de entrada não é um grupo excluível.
 - Tarefas: título, descrição, prioridade, situação, data/horário, etiquetas, checklist, recorrência e antecedência do lembrete. Recorrência diária, semanal (dias escolhidos) ou mensal cria a próxima ocorrência ao concluir, preservando a anterior.
 - Filtros: hoje, atrasadas, sem prazo, concluídas e lixeira; busca por título/descrição e paginação.
 - Concluir preserva no histórico de concluídas, fora da lixeira. Descartar envia à lixeira sem marcar conclusão. Restaurar/reabrir retorna a pendente. A migração recupera concluídas antigas que ainda não foram apagadas; não recupera dados já excluídos definitivamente.
+- Na lixeira só valem duas ações: colocar e retirar. Enquanto está lá, a tarefa não é editada, concluída, movida de grupo nem alterada por desfazer — nenhum caminho sobe a versão dela nem acrescenta linha ao seu histórico. Para mudar qualquer coisa, restaure primeiro.
 - Retenção configurável, inicialmente 30 dias. A mudança vale para novas entradas; repetir a conclusão não reinicia o prazo.
 - Histórico e desfazer por 24 horas, com detecção de conflito entre painel e conversa. Criar uma lista pode ser desfeito como conjunto. Alterações de grupos também têm desfazer, incluindo tarefas movidas na exclusão; configurações e importação não têm desfazer.
 - Até dez ações por mensagem de IA e cem ações por lote do painel, aplicadas atomicamente. A seleção em lote permite mover, concluir, restaurar, alterar prioridade ou descartar tarefas. Ambiguidades pedem esclarecimento, sem gravar partes do pedido.
