@@ -3,6 +3,24 @@ import { dueLabel, isOverdue, localDate } from './domain/format';
 import { dateSchema, type Group, type Task } from './domain/types';
 import { money } from './finance/rules';
 import type { FinanceCategory, FinanceEntry, FinanceTotals } from './finance/types';
+import { evaluate, goalPeriods } from './goals/streak';
+import { formatAmount, streakLabel } from './goals/rules';
+import type { GoalPeriod, GoalState } from './goals/types';
+import { addDays, weekStart } from './goals/dates';
+
+export { addDays, weekStart };
+export type SummaryGoal = {
+  id: string;
+  title: string;
+  period: GoalPeriod;
+  unit: string;
+  // Metas diárias: dias cumpridos e dias que valiam na semana (até hoje). Semanais: 1 período.
+  met: number;
+  periods: number;
+  amount: number;
+  target: number;
+  streak: number;
+};
 
 export type SummaryTask = {
   id: number;
@@ -33,18 +51,11 @@ export type WeekSummary = {
     entries: number;
     categories: { id: string; name: string; expense: number; share: number }[];
   };
+  goals: SummaryGoal[];
 };
 
 const LIST_LIMIT = 20;
 const TOP_CATEGORIES = 5;
-export const addDays = (date: string, days: number) =>
-  new Date(Date.parse(`${date}T12:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
-// Semana de segunda a domingo, contada no dia local da Bahia. getUTCDay em meio-dia UTC dá o
-// dia da semana da própria data, sem o fuso do servidor puxar para o dia anterior.
-export function weekStart(date: string) {
-  const day = new Date(`${date}T12:00:00Z`).getUTCDay();
-  return addDays(date, -((day + 6) % 7));
-}
 const weekSchema = z
   .object({
     week: z.union([dateSchema, z.string().regex(/^-?\d{1,3}$/)]).optional(),
@@ -67,6 +78,7 @@ export function weekSummary(
   finance: { categories: FinanceCategory[]; entries: FinanceEntry[] },
   start: string,
   now = new Date(),
+  goals: GoalState = { goals: [], logs: [] },
 ): WeekSummary {
   const end = addDays(start, 6);
   const nextStart = addDays(start, 7);
@@ -148,7 +160,31 @@ export function weekSummary(
       entries: week.entries.length,
       categories,
     },
+    goals: weekGoals(goals, start, end, now),
   };
+}
+// Metas diárias e semanais ativas: quanto da semana foi cumprido. Mensais ficam de fora, uma
+// semana não diz nada sobre elas.
+function weekGoals(data: GoalState, start: string, end: string, now: Date): SummaryGoal[] {
+  return data.goals
+    .filter((g) => !g.archivedAt && g.period !== 'monthly' && g.startDate <= end)
+    .map((goal) => {
+      const logs = data.logs.filter((l) => l.goalId === goal.id);
+      const periods = goalPeriods(goal, logs, now).filter(
+        (p) => p.start >= start && p.end <= end && p.status !== 'skipped',
+      );
+      return {
+        id: goal.id,
+        title: goal.title,
+        period: goal.period,
+        unit: goal.unit,
+        met: periods.filter((p) => p.status === 'met').length,
+        periods: periods.length,
+        amount: periods.reduce((sum, p) => sum + p.amount, 0),
+        target: periods[0]?.target ?? goal.targets.at(-1)!.amount,
+        streak: evaluate(goal, logs, now).streak,
+      };
+    });
 }
 
 const short = (date: string) => date.slice(5).split('-').reverse().join('/');
@@ -193,6 +229,15 @@ export function formatWeekSummary(s: WeekSummary) {
         : []),
     ],
   ];
+  if (s.goals.length)
+    blocks.push([
+      'Metas:',
+      ...s.goals.map((g) =>
+        g.period === 'daily'
+          ? `${g.title}: ${g.met} de ${g.periods} dia(s) cumprido(s); ofensiva de ${streakLabel(g.streak, 'daily')}.`
+          : `${g.title}: ${formatAmount(g.amount, g.unit)} de ${formatAmount(g.target, g.unit)}${g.met ? ', cumprida' : ''}; ofensiva de ${streakLabel(g.streak, 'weekly')}.`,
+      ),
+    ]);
   if (tasks.completed)
     blocks.push([
       'Concluídas na semana:',

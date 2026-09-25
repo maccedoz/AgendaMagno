@@ -36,6 +36,7 @@ export const urgency = (t: Task) => {
   return days <= 3 ? 'soon' : '';
 };
 export const labels: Record<string, string> = {
+  goals: 'Metas',
   notes: 'Anotações',
   summary: 'Resumo da semana',
   finance: 'Financeiro',

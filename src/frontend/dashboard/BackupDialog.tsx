@@ -22,6 +22,7 @@ export function BackupDialog({
       templates?: unknown[];
       plan?: unknown[];
     };
+    goals?: { goals: unknown[]; logs: unknown[] };
   } | null>(null);
   const [previewRevision, setPreviewRevision] = useState(data.settings.revision);
   const [password, setPassword] = useState('');
@@ -69,7 +70,7 @@ export function BackupDialog({
   return (
     <Dialog
       title="Exportar e restaurar agenda"
-      subtitle="O arquivo contém tarefas, grupos, finanças e o prazo da lixeira. Não inclui senhas nem chaves de IA."
+      subtitle="O arquivo contém tarefas, grupos, finanças, metas e o prazo da lixeira. Não inclui senhas nem chaves de IA."
       close={close}
     >
       <div className="editor-form">
@@ -99,8 +100,10 @@ export function BackupDialog({
               const value = JSON.parse(await file.text());
               if (
                 value.format !== 'AgendaMagno' ||
-                ![1, 2].includes(value.version) ||
-                (value.version === 2 &&
+                ![1, 2, 3].includes(value.version) ||
+                (value.version === 3 &&
+                  (!Array.isArray(value.goals?.goals) || !Array.isArray(value.goals?.logs))) ||
+                (value.version >= 2 &&
                   (!Array.isArray(value.finance?.categories) ||
                     !Array.isArray(value.finance?.entries))) ||
                 !Array.isArray(value.tasks) ||
@@ -123,9 +126,14 @@ export function BackupDialog({
               arquivo. O histórico de ações e a conversa atual serão limpos.
             </p>
             <p>
-              {backup.version === 2
+              {backup.version >= 2
                 ? `Todos os lançamentos, categorias e modelos financeiros atuais serão substituídos por ${backup.finance!.entries.length} lançamentos, ${backup.finance!.categories.length} categorias e ${backup.finance!.templates?.length ?? 0} modelos do arquivo.${backup.finance!.plan ? ` O planejamento atual será trocado pelos ${backup.finance!.plan.length} itens do arquivo.` : ' O planejamento atual será mantido.'}`
                 : 'Este arquivo é versão 1: o financeiro atual será preservado.'}
+            </p>
+            <p>
+              {backup.goals
+                ? `As metas atuais serão substituídas por ${backup.goals.goals.length} metas e ${backup.goals.logs.length} registros do arquivo.`
+                : 'Este arquivo não tem metas: as metas atuais serão preservadas.'}
             </p>
             <p>
               Anotações e seus arquivos não entram no backup: a restauração não os apaga nem os

@@ -1,4 +1,5 @@
 import { loadFinance, saveFinance } from './finance/store';
+import { loadGoals, saveGoals } from './goals/store';
 import { mkdir } from 'node:fs/promises';
 import { Pool } from 'pg';
 import { PGlite } from '@electric-sql/pglite';
@@ -10,6 +11,9 @@ export interface Sql {
 }
 export interface Database extends Sql {
   transaction<T>(fn: (tx: Sql) => Promise<T>): Promise<T>;
+  // Leitura consistente sem a trava da agenda: as telas que só consultam não esperam, nem
+  // fazem esperar, quem está gravando.
+  read<T>(fn: (tx: Sql) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 export async function createDatabase(
@@ -25,28 +29,30 @@ export async function createDatabase(
       idleTimeoutMillis: 30000,
     });
     if (initialize) await pool.query(schema + featureMigration);
+    const run = async <T>(begin: string, fn: (tx: Sql) => Promise<T>) => {
+      const client = await pool.connect();
+      try {
+        await client.query(begin);
+        const result = await fn({
+          query: async <T>(sql: string, params?: unknown[]) => ({
+            rows: (await client.query(sql, params)).rows as T[],
+          }),
+        });
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
     return {
       query: async <T>(sql: string, params?: unknown[]) => ({
         rows: (await pool.query(sql, params)).rows as T[],
       }),
-      transaction: async (fn) => {
-        const client = await pool.connect();
-        try {
-          await client.query('BEGIN');
-          const result = await fn({
-            query: async <T>(sql: string, params?: unknown[]) => ({
-              rows: (await client.query(sql, params)).rows as T[],
-            }),
-          });
-          await client.query('COMMIT');
-          return result;
-        } catch (error) {
-          await client.query('ROLLBACK');
-          throw error;
-        } finally {
-          client.release();
-        }
-      },
+      transaction: (fn) => run('BEGIN', fn),
+      read: (fn) => run('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY', fn),
       close: () => pool.end(),
     };
   }
@@ -59,6 +65,12 @@ export async function createDatabase(
       pg.transaction((tx) =>
         fn({ query: <T>(sql: string, params?: unknown[]) => tx.query<T>(sql, params) }),
       ),
+    // O PGlite é uma conexão só e já executa uma transação por vez; basta não pegar a trava.
+    read: (fn) =>
+      pg.transaction(async (tx) => {
+        await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+        return fn({ query: <T>(sql: string, params?: unknown[]) => tx.query<T>(sql, params) });
+      }),
     close: () => pg.close(),
   };
 }
@@ -117,6 +129,8 @@ export function databaseHint(error: unknown): string {
     return 'O banco respondeu, mas as tabelas da agenda ainda não existem. Rode npm run db:migrate com a conexão administrativa antes do primeiro acesso.';
   if (code === '28P01' || code === '28000')
     return 'O banco recusou as credenciais da conexão. Confira DATABASE_URL: depois de trocar a senha no provedor, atualize a variável e publique de novo.';
+  if (code === '42703')
+    return 'O banco respondeu, mas falta uma coluna nova. Rode npm run db:migrate com a conexão administrativa e publique de novo.';
   if (code === '3D000') return 'O banco indicado em DATABASE_URL não existe.';
   if (code === '42501')
     return 'A conexão do app não tem permissão para esta operação. Confira as permissões do usuário restrito.';
@@ -132,15 +146,26 @@ const tables = {
   operations: 'agenda_operations',
   conversations: 'agenda_conversations',
 } as const;
+// Uma ida ao banco em vez de uma por tabela: no Neon cada consulta é uma viagem de rede, e a
+// tela, o chat e cada ação recarregam o estado inteiro. A subconsulta por tabela mantém uma
+// leitura consistente, porque sai de um único comando.
+const tableAggregate = (key: string, table: string) =>
+  `(SELECT COALESCE(jsonb_agg(data ORDER BY id), '[]'::jsonb) FROM ${table}) AS "${key}"`;
+const stateQuery = `SELECT (SELECT data FROM agenda_meta WHERE id=1) AS "settings", ${Object.entries(
+  tables,
+)
+  .map(([key, table]) => tableAggregate(key, table))
+  .join(', ')}`;
+const viewTables = { groups: tables.groups, tasks: tables.tasks, history: tables.history };
+const viewQuery = `SELECT (SELECT data FROM agenda_meta WHERE id=1) AS "settings", ${Object.entries(
+  viewTables,
+)
+  .map(([key, table]) => tableAggregate(key, table))
+  .join(', ')}`;
 export async function loadState(tx: Sql, includeFinance = false): Promise<State> {
   const state = emptyState();
-  state.settings = (
-    await tx.query<{ data: State['settings'] }>('SELECT data FROM agenda_meta WHERE id=1')
-  ).rows[0].data;
-  for (const [key, table] of Object.entries(tables) as [keyof typeof tables, string][]) {
-    const rows = await tx.query<{ data: unknown }>(`SELECT data FROM ${table} ORDER BY id`);
-    Object.assign(state, { [key]: rows.rows.map((r) => r.data) });
-  }
+  const row = (await tx.query<Record<string, unknown>>(stateQuery)).rows[0];
+  Object.assign(state, row);
   state.operations.sort(
     (a, b) => (a.sequence ?? 0) - (b.sequence ?? 0) || a.at.localeCompare(b.at),
   );
@@ -148,9 +173,19 @@ export async function loadState(tx: Sql, includeFinance = false): Promise<State>
   if (includeFinance) state.finance = await loadFinance(tx);
   return state;
 }
+// O que a tela mostra: sem operações nem contexto do chat, que só servem a quem grava.
+export async function loadView(
+  sql: Sql,
+): Promise<Pick<State, 'settings' | 'groups' | 'tasks' | 'history'>> {
+  const row = (await sql.query<Pick<State, 'settings' | 'groups' | 'tasks' | 'history'>>(viewQuery))
+    .rows[0];
+  row.history.sort((a, b) => a.at.localeCompare(b.at));
+  return row;
+}
 export async function saveState(tx: Sql, before: State, after: State) {
   if (after.finance)
     await saveFinance(tx, before.finance ?? (await loadFinance(tx)), after.finance);
+  if (after.goals) await saveGoals(tx, before.goals ?? (await loadGoals(tx)), after.goals);
   if (JSON.stringify(before.settings) !== JSON.stringify(after.settings))
     await tx.query('UPDATE agenda_meta SET data=$1::jsonb WHERE id=1', [
       JSON.stringify(after.settings),

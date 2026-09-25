@@ -1,6 +1,7 @@
 import type { Command, Group, History, Task } from '@/backend/domain';
 
 export type View =
+  | 'goals'
   | 'notes'
   | 'summary'
   | 'finance'
@@ -23,6 +24,9 @@ export type Message = {
   status: string;
   error: string | null;
   created_at: string;
+  // Etapa do pedido: 'reading' enquanto a IA interpreta e a agenda executa, 'writing' enquanto a
+  // resposta é reescrita em linguagem natural.
+  stage?: 'reading' | 'writing' | null;
 };
 export type Data = {
   tasks: Task[];

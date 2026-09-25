@@ -7,6 +7,7 @@ import {
   ArrowRight,
   Check,
   CheckCheck,
+  Flame,
   ChartColumn,
   ChevronRight,
   Circle,
@@ -60,6 +61,7 @@ import { GroupDialog, groupIcons } from './GroupDialog';
 import { SettingsDialog } from './SettingsDialog';
 import { Finance } from './Finance';
 import { Notes } from './Notes';
+import { Goals } from './Goals';
 import { WeeklySummary } from './WeeklySummary';
 import { Assistant } from './Assistant';
 import { ActivityDialog } from './ActivityDialog';
@@ -429,6 +431,7 @@ export default function Dashboard() {
         <nav aria-label="Navegação principal">
           <span className="nav-label">SUA AGENDA</span>
           {navItem('assistant', 'Assistente', <MessageCircle size={18} />)}
+          {navItem('goals', 'Metas', <Flame size={18} />)}
           {navItem('finance', 'Financeiro', <LayoutGrid size={18} />)}
           {navItem('notes', 'Anotações', <NotebookPen size={18} />)}
           {navItem('summary', 'Resumo da semana', <ChartColumn size={18} />)}
@@ -580,7 +583,7 @@ export default function Dashboard() {
           </div>
         </header>
         <main className={`main-content${view === 'assistant' ? ' assistant-main' : ''}`}>
-          {view !== 'assistant' && view !== 'finance' && view !== 'notes' && view !== 'summary' && (
+          {!['assistant', 'finance', 'notes', 'summary', 'goals'].includes(view) && (
             <>
               <section className="page-heading">
                 <div>
@@ -716,6 +719,8 @@ export default function Dashboard() {
               revision={data?.settings.revision ?? 0}
               refresh={refresh}
             />
+          ) : view === 'goals' ? (
+            <Goals offline={isOffline} revision={data?.settings.revision ?? 0} refresh={refresh} />
           ) : view === 'notes' ? (
             <Notes offline={isOffline} />
           ) : view === 'summary' ? (

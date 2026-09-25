@@ -40,6 +40,31 @@ test('excluir grupo preserva tarefas, lixeira existente e permite desfazer', () 
   assert.equal(state.groups[0].name, 'Estudos');
   assert.ok(state.tasks.every((t) => t.groupId === state.groups[0].id));
 });
+test('excluir grupo não altera versão nem histórico de tarefa que já estava na lixeira', () => {
+  const trashed = run(grouped(), [{ op: 'trash_task', task: '#2' }]);
+  const before = trashed.tasks[1];
+  const history = trashed.history.filter((h) => h.taskId === 2).length;
+  for (const deleteTasks of [true, false]) {
+    const state = run(trashed, [{ op: 'delete_group', group: 'Estudos', deleteTasks }]);
+    const after = state.tasks[1];
+    assert.equal(after.version, before.version);
+    assert.equal(after.updatedAt, before.updatedAt);
+    assert.equal(after.purgeAt, before.purgeAt);
+    assert.equal(state.history.filter((h) => h.taskId === 2).length, history);
+    const undone = run(state, [{ op: 'undo' }]);
+    assert.equal(undone.tasks[1].version, before.version);
+    assert.equal(undone.tasks[1].groupId, undone.groups[0].id);
+  }
+});
+test('na lixeira só se restaura: editar ou concluir é recusado', () => {
+  const state = run(grouped(), [{ op: 'trash_task', task: '#1' }]);
+  assert.throws(() => run(state, [{ op: 'update_task', task: '#1', title: 'Novo' }]), /Restaure/);
+  assert.throws(() => run(state, [{ op: 'complete_task', task: '#1' }]), /Restaure/);
+  const again = execute(state, [{ op: 'trash_task', task: '#1' }], 'panel', now);
+  assert.equal(again.state.tasks[0].version, state.tasks[0].version);
+  assert.match(again.reply, /já está na lixeira/);
+  assert.equal(run(state, [{ op: 'restore_task', task: '#1' }]).tasks[0].trashedAt, null);
+});
 test('excluir grupo com tarefas usa lixeira e é atômico, inclusive em conflitos', () => {
   const original = grouped();
   let state = run(original, [{ op: 'delete_group', group: 'Estudos', deleteTasks: true }]);

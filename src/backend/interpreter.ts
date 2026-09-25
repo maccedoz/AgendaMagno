@@ -1,4 +1,5 @@
 import { financeContext } from './finance/store';
+import { goalsContext } from './goals/store';
 import {
   commandsSchema,
   contextFor,
@@ -84,7 +85,7 @@ export function capitalize(text: string) {
 function cleanTitles(commands: Command[]): Command[] {
   return commands.map((c) => {
     const next = { ...c } as Record<string, unknown>;
-    if ((c.op === 'create_task' || c.op === 'update_task') && c.title)
+    if ((c.op === 'create_task' || c.op === 'update_task' || c.op === 'goal_create') && c.title)
       next.title = capitalize(stripFiller(c.title));
     for (const field of ['description', 'appendDescription', 'question'] as const)
       if (typeof next[field] === 'string') next[field] = capitalize(next[field] as string);
@@ -153,6 +154,8 @@ export function basicInterpret(text: string, now = new Date()): Command[] | null
       { op: 'week_summary', ...(m[1] ? { date: addDays(weekStart(localDate(now)), -7) } : {}) },
     ];
   if (/^(desfazer|desfaca(?: a ultima alteracao)?)$/.test(n)) return [{ op: 'undo' }];
+  if (/^(metas|minhas metas|como estao (?:as )?minhas metas|ofensivas?)$/.test(n))
+    return [{ op: 'goal_status' }];
   if (/^(quais (?:os )?grupos(?: existem)?|listar grupos|liste (?:os )?grupos)$/.test(n))
     return [{ op: 'list_groups' }];
   if (/^(qual (?:e )?o prazo da lixeira|configuracoes|prazo da lixeira)$/.test(n))
@@ -300,6 +303,8 @@ export async function interpret(
   // uber” chegava ao modelo sem nenhuma tarefa e sem nenhum grupo.
   const financeOnly = financeWords.test(normalize(text)) && !taskWords.test(normalize(text));
   const finance = financial ? await financeContext(database) : undefined;
+  // Poucas linhas e sempre úteis: "bebi 500 ml" não tem palavra-chave nenhuma de meta.
+  const goals = await goalsContext(database);
   const terms = normalize(text)
     .split(/\W+/)
     .filter((t) => t.length > 3);
@@ -330,6 +335,8 @@ Operações: create_group(name), rename_group(group,name), update_group(group,na
 Operações financeiras: finance_create(kind,amount,description,date?,category?), finance_update(entry,kind?,amount?,description?,date?,category?), finance_delete(entry), finance_restore(entry), finance_list(kind?,category?,fromDate?,toDate?,search?,page?), finance_create_category(name,categoryKind), finance_update_category(category,name?,categoryKind?), finance_archive_category(category), finance_restore_category(category).
 Resumo da semana: week_summary(date?). Use para “resumo da semana”, “como foi minha semana”, “balanço da semana passada”: tarefas concluídas, criadas, atrasadas e da semana seguinte, mais receitas e despesas da semana. date é qualquer dia da semana pedida, tirado das semanas resolvidas acima; sem date vale a semana atual. Nunca calcule nem resuma por conta própria, nem troque por list_tasks ou finance_list: a agenda monta o resumo.
 kind: income|expense; categoryKind: income|expense|both. amount é STRING em reais no formato brasileiro, como "42,90" ou "3.000,00"; nunca centavos ou float. entry é ID existente ou descrição exata, category é nome/ID existente. Não invente IDs ou categorias. Nunca envie confirmed: a agenda confirma exclusões. Priorize categoria explícita; se não houver, sugira uma categoria compatível do contexto na mesma interpretação ou use "Sem categoria". Sem valor, omita amount: a agenda perguntará e retomará o pedido. Descrição precisa vir do pedido. Sem data, omita date; datas relativas usam o dia original da mensagem, date em YYYY-MM-DD. Consultas mensais usam fromDate e toDate dos meses resolvidos acima. Nunca calcule totais: finance_list faz isso no servidor. Categoria nova só com pedido da pessoa (“crie a categoria X”, “quero uma categoria de despesa chamada X”): use finance_create_category com o nome dito e categoryKind do pedido, ou expense quando o tipo não for dito. Se o pedido registrar um lançamento em uma categoria que a pessoa nomeia e não existe, envie finance_create_category antes do lançamento, na mesma resposta, com o mesmo nome. Nunca renomeie nem invente categorias por conta própria. Não há banco/cartão, parcelas, investimentos ou previsão: essas operações são unsupported. Misturar tarefas e finanças só quando TODAS as ações forem explícitas e completas; caso contrário retorne apenas clarify/unsupported.
+Metas (hábitos com ofensiva): goal_create(title,target,period?,goalKind?,unit?,weekdays?,countDays?,reminderTime?), goal_update(goal,title?,target?,weekdays?,countDays?,reminderTime?), goal_archive(goal), goal_restore(goal), goal_pause(goal,fromDate?,toDate?), goal_resume(goal), goal_delete(goal), goal_log(goal,amount?,date?), goal_status(goal?).
+period: daily|weekly|monthly (padrão daily); goalKind: amount (quantidade em ml, páginas, minutos, km…) ou count (vezes: treinos, sessões). target e amount são STRING com número e unidade opcional, como "2,5 L", "500 ml", "10", "6"; não converta unidades, a agenda converte. goal é ID ou nome de uma meta do contexto. Registro de hábito (“bebi 500 ml de água”, “li 12 páginas”, “treinei hoje”, “meditei”) é goal_log na meta correspondente do contexto; em meta de vezes, sem amount vale 1. date só para “ontem” (a agenda aceita ontem até as 12h). “Quero beber 2,5 L de água por dia” é goal_create com title "Beber água", unit "ml", target "2,5 L". “Treinar 6x na semana” é goal_create com title "Treinar", period weekly, goalKind count, target "6". countDays (padrão true) conta no máximo 1 por dia; false só se a pessoa disser que cada vez conta, mesmo no mesmo dia. weekdays [0=domingo..6=sábado] só em meta diária que vale em alguns dias. reminderTime HH:mm para lembrete da meta. “Como estão minhas metas”, “quantos dias de ofensiva” é goal_status. Nunca calcule ofensivas nem totais. Registro que não corresponde a nenhuma meta do contexto é clarify perguntando se quer criar a meta. Não misture metas com tarefas: “beber água” é meta, não tarefa, quando existe a meta.
 Campos só os listados. status: pending|in_progress; priority: low|normal|high. dueDate: YYYY-MM-DD ou null; dueTime: HH:mm ou null, somente se informado. group: nome/ID, null para Caixa de entrada, "contexto" para grupo recente. task: código #N ou título exato; "contexto" somente se a referência for única. Referências primeira/segunda/terceira usam a última lista.
 Filtros: active (padrão), today, overdue, no_date, trash, completed, all. Concluídas ficam no histórico, fora da lixeira. Consultas de data DEVEM usar dueDate (dia exato) ou fromDate/toDate (intervalo), nunca apenas filter:active. Exemplo: “quais tarefas eu tenho pro dia 24” neste mês exige list_tasks com dueDate no dia 24 deste mês e ano. Se não foi informado mês, use o mês da mensagem; se não foi informado ano, use o ano da mensagem. Não acrescente search com a expressão de data. Retirar do grupo: update_task group:null. Finalizar/terminar: complete_task. Excluir tarefa: trash_task. Restaurar/reabrir: restore_task. Acrescentar não substitui a descrição. Prazo sozinho não cria lembrete. reminderMinutes é a antecedência em minutos, 0 no prazo (sem horário, 09:00). tags é lista de strings. recurrence: {frequency:daily|weekly|monthly,interval:inteiro positivo,weekdays?:[0=domingo..6=sábado]}; exige dueDate. Checklist é editado pelo painel, não invente UUIDs. Excluir grupo: deleteTasks:false preserva as tarefas na Caixa de entrada, true envia-as à lixeira. Se a pessoa não disse o que fazer com elas, OMITA deleteTasks — a agenda faz a pergunta com as duas opções certas e retoma a exclusão com a resposta. Não use clarify para isso.
 Quando grupo não existir, use o nome pedido: a API fará a pergunta. Para criar grupo, só use create_group se solicitado explicitamente. Nomes de tarefas repetidos: preserve o título, não escolha um ID arbitrariamente.
@@ -340,7 +347,7 @@ ${turns.length ? `Conversa recente, do mais antigo ao mais novo, só para resolv
       : asked
         ? `A mensagem anterior terminou com uma pergunta da agenda: ${JSON.stringify(asked)}. Se esta mensagem responde a essa pergunta (uma data, um nome, um valor, “sim”, a escolha de uma opção…), ela completa o pedido anterior: devolva os comandos do pedido anterior inteiro já com a informação dada, sem pedir de novo o que já foi respondido. Só trate como pedido novo se claramente não tiver relação com a pergunta.\n`
         : ''
-  }Contexto (lista de candidatos parcial, não é lista completa): ${JSON.stringify({ finance, groups: financeOnly ? [] : state.groups, candidates, recent: { groupId: ctx.groupId, taskIds: ctx.taskIds } })}`;
+  }Contexto (lista de candidatos parcial, não é lista completa): ${JSON.stringify({ finance, goals, groups: financeOnly ? [] : state.groups, candidates, recent: { groupId: ctx.groupId, taskIds: ctx.taskIds } })}`;
   const commands = await generateCommands(system, text, database, options);
   if (commands) {
     if (commands.every((c) => c.op === 'list_tasks')) {

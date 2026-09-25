@@ -49,8 +49,7 @@ export async function financePlan(input: unknown, connection?: Database): Promis
     .toISOString()
     .slice(0, 10);
   const database = connection ?? (await db());
-  return database.transaction(async (tx) => {
-    await lock(tx);
+  return database.read(async (tx) => {
     // O real vem sempre do mês inteiro, sem os filtros da aba de lançamentos: comparar o plano
     // com um recorte filtrado mostraria uma folga que não existe.
     const byCategory = (

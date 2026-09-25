@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SummaryTask, WeekSummary } from '@/backend/summary';
 import { api } from './api';
+import { formatAmount, streakLabel } from '@/shared/goals';
 
 const money = (v: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v / 100);
@@ -217,6 +218,35 @@ export function WeeklySummary({ offline, revision }: { offline: boolean; revisio
                 </ul>
               )}
             </section>
+            {data.goals.length > 0 && (
+              <section className="summary-panel">
+                <h2>Metas</h2>
+                <ul className="summary-categories">
+                  {data.goals.map((g) => {
+                    const share =
+                      g.period === 'daily'
+                        ? (100 * g.met) / Math.max(1, g.periods)
+                        : Math.min(100, (100 * g.amount) / Math.max(1, g.target));
+                    return (
+                      <li key={g.id}>
+                        <div>
+                          <span>{g.title}</span>
+                          <strong>
+                            {g.period === 'daily'
+                              ? `${g.met} de ${g.periods} dia(s)`
+                              : `${formatAmount(g.amount, g.unit)} de ${formatAmount(g.target, g.unit)}`}{' '}
+                            · ofensiva de {streakLabel(g.streak, g.period)}
+                          </strong>
+                        </div>
+                        <span className="summary-bar" aria-hidden="true">
+                          <span style={{ width: `${Math.max(2, share)}%` }} />
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
             <TaskList
               title="Concluídas na semana"
               total={data.tasks.completed}
