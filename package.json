@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
+    "db:sql": "node --import tsx scripts/migrate.ts --sql",
     "db:migrate": "node --import tsx --env-file-if-exists=.env scripts/migrate.ts",
     "deploy:check": "node --import tsx --env-file-if-exists=.env.production scripts/deploy-check.ts",
     "senha:hash": "node scripts/password-hash.mjs",

@@ -110,9 +110,59 @@ export function queryDate(text: string, now: Date): string | null {
 // "cadastre uma IA" reply) instead of guessing which part of a compound request to keep.
 const COMPOUND_REQUEST =
   /\be\s+(?:crie|criar|renomeie|mude|anota|anote|adicione|adicionar|finalizei|terminei|conclu[ií]|conclua|exclua|excluir|descarte|restaure|recupere|reabra|comecei|inicie|mova|tire|retire|acrescente|troque|mostre|mostrar|coloque|deixe|busque|buscar|procure)\b/i;
+// Forma explícita de criação: o grupo vem antes do título. Resolve também o
+// atalho "hj", sem confundir uma tarefa chamada "mandar email" com enviar email.
+export function groupTaskCreation(
+  text: string,
+  now: Date,
+  groups: State['groups'] = [],
+): Command | null {
+  const raw = text.trim().replace(/[.!?]+$/, '');
+  if (COMPOUND_REQUEST.test(raw) || /[;\n]/.test(raw)) return null;
+  const prefix = raw.match(
+    /^(?:adicione|adicionar|anote|anota|crie(?: a tarefa)?)\s+(?:em|no grupo|na disciplina)\s+(.+)$/i,
+  );
+  if (!prefix) return null;
+  const rest = prefix[1];
+  const known = [...groups]
+    .sort((a, b) => b.name.length - a.name.length)
+    .find((g) => normalize(rest).startsWith(normalize(g.name) + ' '));
+  const split = known
+    ? [rest, known.name, rest.slice(known.name.length).trim()]
+    : rest.match(
+        /^(.+?)\s+((?:mandar|enviar|fazer|comprar|estudar|ler|revisar|pagar|ligar|resolver|entregar|preparar|agendar|marcar)\b.+)$/i,
+      );
+  if (!split) return null;
+  let title = split[2];
+  let dueDate: string | undefined;
+  const deadline = title.match(
+    /\s+(?:at[eé]|para|pra|pro)\s+(hj|hoje|amanh[ãa]|\d{4}-\d{2}-\d{2}|\d{2}\/\d{2}\/\d{4})$/i,
+  );
+  if (deadline) {
+    dueDate = resolveDay(normalize(deadline[1]) === 'hj' ? 'hoje' : deadline[1], now) ?? undefined;
+    title = title.slice(0, deadline.index).trim();
+  }
+  // Outros prazos e qualificadores ficam a cargo da IA; não os incorpore ao título.
+  if (
+    !title ||
+    title.length > 200 ||
+    /\b(?:at[eé]|para|pra|pro)\s+(?:hoje|hj|amanh[ãa]|segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo|dia|semana|m[eê]s)\b/i.test(
+      title,
+    )
+  )
+    return null;
+  return {
+    op: 'create_task',
+    group: split[1],
+    title: stripFiller(title),
+    ...(dueDate ? { dueDate } : {}),
+  };
+}
 export function basicInterpret(text: string, now = new Date()): Command[] | null {
   const raw = text.trim().replace(/[.!?]+$/, '');
   if (COMPOUND_REQUEST.test(raw)) return null;
+  const creation = groupTaskCreation(raw, now);
+  if (creation) return [creation];
   const n = normalize(raw);
   let m: RegExpMatchArray | null;
   if (/^(ajuda|help|o que posso fazer por aqui)$/.test(n)) return [{ op: 'help' }];
@@ -286,14 +336,19 @@ kind: income|expense; categoryKind: income|expense|both. amount é STRING em rea
 Campos só os listados. status: pending|in_progress; priority: low|normal|high. dueDate: YYYY-MM-DD ou null; dueTime: HH:mm ou null, somente se informado. group: nome/ID, null para Caixa de entrada, "contexto" para grupo recente. task: código #N ou título exato; "contexto" somente se a referência for única. Referências primeira/segunda/terceira usam a última lista.
 Filtros: active (padrão), today, overdue, no_date, trash, completed, all. Concluídas ficam no histórico, fora da lixeira. Consultas de data DEVEM usar dueDate (dia exato) ou fromDate/toDate (intervalo), nunca apenas filter:active. Exemplo: “quais tarefas eu tenho pro dia 24” neste mês exige list_tasks com dueDate no dia 24 deste mês e ano. Se não foi informado mês, use o mês da mensagem; se não foi informado ano, use o ano da mensagem. Não acrescente search com a expressão de data. Retirar do grupo: update_task group:null. Finalizar/terminar: complete_task. Excluir tarefa: trash_task. Restaurar/reabrir: restore_task. Acrescentar não substitui a descrição. Prazo sozinho não cria lembrete. reminderMinutes é a antecedência em minutos, 0 no prazo (sem horário, 09:00). tags é lista de strings. recurrence: {frequency:daily|weekly|monthly,interval:inteiro positivo,weekdays?:[0=domingo..6=sábado]}; exige dueDate. Checklist é editado pelo painel, não invente UUIDs. Excluir grupo: deleteTasks:false preserva as tarefas na Caixa de entrada, true envia-as à lixeira. Se a pessoa não disse o que fazer com elas, OMITA deleteTasks — a agenda faz a pergunta com as duas opções certas e retoma a exclusão com a resposta. Não use clarify para isso.
 Quando grupo não existir, use o nome pedido: a API fará a pergunta. Para criar grupo, só use create_group se solicitado explicitamente. Nomes de tarefas repetidos: preserve o título, não escolha um ID arbitrariamente.
-Datas relativas usam a data original. Prazo dito no pedido (“até quinta”, “para amanhã”, “dia 30”, “hoje às 19h”) vira dueDate/dueTime e SAI do título: título é só o nome da tarefa. Palavras de conversa também SAEM do título: “tbm”, “também”, “tb”, “por favor”, “pfv”, “valeu”, “obrigado”, “ok”, “aí”, “pra mim”. Em “adicione acido tbm”, o título é “acido”. Em “adicione em Trabalho o relatório até quinta”, o título é “relatório”, o grupo é “Trabalho” e dueDate é a quinta-feira do calendário acima. Data contraditória (dia da semana e número incompatíveis), vaga ou faltando informação: clarify. clarify é só para pedido que EXISTE na lista acima mas está ambíguo ou incompleto (qual tarefa, qual grupo, qual data). Pedido que a agenda não sabe fazer — enviar e-mail ou mensagem, compartilhar com outra pessoa, arquivos de áudio (o ditado do navegador envia texto), anexos, integração bancária, reorganização automática, lembrete por fora do app, operações amplas acima de 10 ações — é unsupported(question), e question diz em uma frase o que falta e o que dá para fazer no lugar. Nunca invente uma operação parecida para atender um pedido desses. Se qualquer parte de um pedido for ambígua, retorne SOMENTE clarify; se qualquer parte não for suportada, retorne SOMENTE unsupported, sem executar as outras partes.
+Datas relativas usam a data original. Prazo dito no pedido (“até quinta”, “para amanhã”, “dia 30”, “hoje às 19h”) vira dueDate/dueTime e SAI do título: título é só o nome da tarefa. “hj” significa hoje. “adicione em Pessoal mandar email sobre horas optativas ate hj” é create_task(title:"mandar email sobre horas optativas", group:"Pessoal", dueDate:dia local acima); nunca update_task. Uma tarefa chamada “mandar email” não é um pedido para enviar o email agora. Palavras de conversa também SAEM do título: “tbm”, “também”, “tb”, “por favor”, “pfv”, “valeu”, “obrigado”, “ok”, “aí”, “pra mim”. Em “adicione acido tbm”, o título é “acido”. Em “adicione em Trabalho o relatório até quinta”, o título é “relatório”, o grupo é “Trabalho” e dueDate é a quinta-feira do calendário acima. Data contraditória (dia da semana e número incompatíveis), vaga ou faltando informação: clarify. clarify é só para pedido que EXISTE na lista acima mas está ambíguo ou incompleto (qual tarefa, qual grupo, qual data). Pedido que a agenda não sabe fazer — enviar e-mail ou mensagem, compartilhar com outra pessoa, arquivos de áudio (o ditado do navegador envia texto), anexos, integração bancária, reorganização automática, lembrete por fora do app, operações amplas acima de 10 ações — é unsupported(question), e question diz em uma frase o que falta e o que dá para fazer no lugar. Nunca invente uma operação parecida para atender um pedido desses. Se qualquer parte de um pedido for ambígua, retorne SOMENTE clarify; se qualquer parte não for suportada, retorne SOMENTE unsupported, sem executar as outras partes.
 ${turns.length ? `Conversa recente, do mais antigo ao mais novo, só para resolver referências como “essa” ou “muda pra sexta”: ${JSON.stringify(turns)}\n` : ''}${
     ctx.pending
       ? `Pergunta pendente que a agenda fez na mensagem anterior: ${JSON.stringify({ pergunta: ctx.pending.question, opcoes: ctx.pending.options.map((o) => o.label) })}. Se esta mensagem responde a ela, repita o pedido original inteiro já com a escolha aplicada, em vez de começar outro. Se for um pedido diferente, ignore a pergunta.\n`
       : ''
   }Contexto (lista de candidatos parcial, não é lista completa): ${JSON.stringify({ finance, groups: financeOnly ? [] : state.groups, candidates, recent: { groupId: ctx.groupId, taskIds: ctx.taskIds } })}`;
+  const creation = groupTaskCreation(text, now, state.groups);
   const commands = await generateCommands(system, text, database, options);
   if (commands) {
+    // Corrige apenas a atualização inválida que motivou esta proteção. Uma criação
+    // válida da IA pode trazer prioridade, horário ou outros campos pedidos.
+    if (creation && commands.length === 1 && commands[0].op === 'update_task' && !commands[0].task)
+      return [creation];
     if (commands.every((c) => c.op === 'list_tasks')) {
       const date = queryDate(text, now);
       if (date)
@@ -310,7 +365,7 @@ ${turns.length ? `Conversa recente, do mais antigo ao mais novo, só para resolv
   // Sem nenhuma IA cadastrada (generateCommands devolve null antes de qualquer chamada). Os
   // padrões fixos entram só aqui: quando há IA, ela interpreta tudo, para que uma frase fora do
   // formato exato não seja resolvida ao pé da letra por uma regex.
-  const basic = basicInterpret(text, now);
+  const basic = creation ? [creation] : basicInterpret(text, now);
   return (
     (basic && cleanTitles(basic)) ?? [
       {

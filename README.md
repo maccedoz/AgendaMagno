@@ -373,11 +373,16 @@ Anotações exigem conexão e **não entram no arquivo de exportação**. Restau
 
 Execute `npm run db:migrate` com a conexão administrativa antes de publicar. A migração acrescenta `agenda_finance_categories`, `agenda_finance_entries`, `agenda_finance_templates`, `agenda_notes` e `agenda_note_files`, seus índices e dez categorias iniciais, sem apagar tarefas nem duplicar categorias em execuções posteriores. Bancos locais aplicam a migração na inicialização.
 
-Para um papel `agenda_runtime` já existente, execute somente o GRANT abaixo com a conexão administrativa (a criação do papel em `scripts/runtime-role.sql` é necessária apenas na primeira instalação):
-
-```sql
-GRANT SELECT, INSERT, UPDATE, DELETE ON agenda_finance_categories, agenda_finance_entries,
-  agenda_finance_templates, agenda_notes, agenda_note_files TO agenda_runtime;
-```
+A migração também concede leitura e escrita nas tabelas ao papel `agenda_runtime`, se ele já existir. A criação do papel em `scripts/runtime-role.sql` é necessária apenas na primeira instalação.
 
 `npm run deploy:check` confere a presença das tabelas e os privilégios de leitura/escrita. Valide migração e permissões no PostgreSQL de homologação antes da publicação. Os testes locais usam PGlite e bancos temporários, sem modificar os dados reais.
+
+### Criar as tabelas das novas funcionalidades
+
+A migração cobre financeiro, modelos de lançamentos, anotações e anexos. Com a conexão administrativa configurada em `DATABASE_MIGRATION_URL`, execute `npm run db:migrate`. O comando preserva os dados existentes e atualiza os privilégios do papel `agenda_runtime`, se ele já existir.
+
+Se preferir o editor SQL do provedor, execute o conteúdo completo de [scripts/migrate.sql](scripts/migrate.sql). O arquivo pode ser aplicado mais de uma vez. Para regenerá-lo a partir do schema atual, use `npm run --silent db:sql > scripts/migrate.sql`. Nunca use a conexão administrativa como credencial de execução do aplicativo.
+
+Em modo local, as migrações novas são aplicadas automaticamente também após atualização do código com a conexão ainda aberta. No PostgreSQL publicado, a migração continua explícita, pois o papel de execução não deve ter permissão para criar tabelas.
+
+A frase “adicione em Pessoal mandar email sobre horas optativas ate hj” cria uma tarefa em Pessoal, com prazo no dia da mensagem em `America/Bahia`. “Mandar email” é o título da tarefa; o aplicativo não envia o email. Se Pessoal ainda não existir, a conversa oferece criá-lo antes de concluir o pedido.

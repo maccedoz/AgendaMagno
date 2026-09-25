@@ -53,7 +53,15 @@ export function findGroup(
 }
 export function findTask(state: State, command: Command, ctx: Conversation): Task {
   let ref = command.task;
-  if (!ref) throw new DomainError('Informe o título ou o código da tarefa.');
+  if (!ref)
+    throw new Ambiguity(
+      'Qual tarefa você quer alterar? Informe o título ou o código da tarefa.',
+      'task',
+      ctx.taskIds
+        .map((id) => state.tasks.find((t) => t.id === id))
+        .filter((t): t is Task => Boolean(t))
+        .map((t) => ({ ref: `#${t.id}`, label: `#${t.id} ${t.title}` })),
+    );
   if (['essa tarefa', 'esta tarefa', 'contexto'].includes(normalize(ref))) {
     if (ctx.taskIds.length !== 1)
       throw new DomainError('Qual tarefa? Informe o código, por exemplo #12.');

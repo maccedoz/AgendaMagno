@@ -1085,3 +1085,76 @@ test('conversa financeira recente não esconde tarefas e grupos do pedido seguin
   assert.match(prompt, /Estudos/);
   assert.match(prompt, /Ler capítulo três/);
 });
+
+test('comando de criação explícito corrige update_task sem referência devolvido pela IA', async () => {
+  await saveProvider(config(), database);
+  const commands = await interpret(
+    emptyState(),
+    'adicione em Pessoal mandar email sobre horas optativas ate hj',
+    'creation-regression',
+    new Date('2026-09-23T15:00:00Z'),
+    database,
+    {
+      fetch: async () =>
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  commands: [
+                    {
+                      op: 'update_task',
+                      title: 'mandar email sobre horas optativas',
+                      group: 'Pessoal',
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+    },
+  );
+  assert.deepEqual(commands, [
+    {
+      op: 'create_task',
+      group: 'Pessoal',
+      title: 'mandar email sobre horas optativas',
+      dueDate: '2026-09-23',
+    },
+  ]);
+});
+
+test('criação válida da IA preserva prioridade e horário pedidos', async () => {
+  await saveProvider(config(), database);
+  const expected = [
+    {
+      op: 'create_task',
+      title: 'mandar email',
+      group: 'Pessoal',
+      priority: 'high',
+      dueDate: '2026-09-23',
+      dueTime: '18:00',
+    },
+  ];
+  const commands = await interpret(
+    emptyState(),
+    'adicione em Pessoal mandar email com prioridade alta hoje às 18h',
+    'creation-fields-regression',
+    new Date('2026-09-23T15:00:00Z'),
+    database,
+    {
+      fetch: async () =>
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ commands: expected }),
+              },
+            },
+          ],
+        }),
+    },
+  );
+  assert.deepEqual(commands, expected);
+});

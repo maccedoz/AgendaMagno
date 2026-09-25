@@ -64,7 +64,7 @@ export async function createDatabase(
 }
 const globalDb = globalThis as unknown as {
   agendaDb?: Promise<Database>;
-  agendaFeaturesV2?: Promise<unknown>;
+  agendaFeatureMigrations?: Map<string, Promise<unknown>>;
 };
 export function db(): Promise<Database> {
   if (!globalDb.agendaDb) {
@@ -93,16 +93,20 @@ export function db(): Promise<Database> {
     // Only the local development database applies migrations on startup.
     // Production uses the migration connection, separate from the runtime role.
     if (process.env.DATABASE_MODE === 'local') {
-      if (!globalDb.agendaFeaturesV2) {
-        globalDb.agendaFeaturesV2 = (async () => {
+      // A chave é o SQL da migração: uma atualização do código em desenvolvimento
+      // aplica os novos acréscimos mesmo se a conexão sobreviver ao hot reload.
+      globalDb.agendaFeatureMigrations ??= new Map();
+      let migration = globalDb.agendaFeatureMigrations.get(featureMigration);
+      if (!migration) {
+        migration = connection.transaction(async (tx) => {
+          await lock(tx);
           for (const statement of featureMigration.split(';').filter((s) => s.trim()))
-            await connection.query(statement);
-        })();
-        globalDb.agendaFeaturesV2.catch(() => {
-          delete globalDb.agendaFeaturesV2;
+            await tx.query(statement);
         });
+        globalDb.agendaFeatureMigrations.set(featureMigration, migration);
+        migration.catch(() => globalDb.agendaFeatureMigrations?.delete(featureMigration));
       }
-      await globalDb.agendaFeaturesV2;
+      await migration;
     }
     return connection;
   });

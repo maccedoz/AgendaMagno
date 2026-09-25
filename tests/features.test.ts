@@ -370,3 +370,23 @@ test('migração escolhe o banco pela intenção declarada, não pelo modo do .e
     /Falta a conexão de migração/,
   );
 });
+
+test('criação com grupo antes do título e prazo hj não vira edição nem envio de email', () => {
+  const commands = basicInterpret(
+    'adicione em Pessoal mandar email sobre horas optativas ate hj',
+    now,
+  )!;
+  assert.deepEqual(commands, [
+    {
+      op: 'create_task',
+      group: 'Pessoal',
+      title: 'mandar email sobre horas optativas',
+      dueDate: '2026-09-22',
+    },
+  ]);
+  const state = run(emptyState(), [{ op: 'create_group', name: 'Pessoal' }]);
+  const result = execute(state, commands, 'web', now);
+  assert.equal(result.clarification, false);
+  assert.equal(result.state.tasks[0].title, 'mandar email sobre horas optativas');
+  assert.equal(result.state.tasks[0].dueDate, '2026-09-22');
+});

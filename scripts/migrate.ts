@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { createDatabase, databaseHint } from '../src/backend/db';
+import { schema, featureMigration } from '../src/backend/schema';
 
 // Qual banco esta execução vai migrar. DATABASE_MIGRATION_URL é uma declaração de intenção:
 // quem a define está dizendo qual banco quer preparar. Sem esta precedência, um .env de
@@ -20,15 +21,33 @@ export function migrationTarget(env: Record<string, string | undefined> = proces
   const parsed = new URL(url);
   return { url, label: `${parsed.host}${parsed.pathname}` };
 }
+// A mesma fonte atende a CLI e o editor SQL do provedor; inclui todas as adições.
+export const runtimeGrants = `DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agenda_runtime') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ${[...(schema + featureMigration).matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)].map((m) => m[1]).join(', ')} TO agenda_runtime;
+  END IF;
+END $$;`;
+export function migrationSql() {
+  return `-- Gerado por npm run db:sql. Migração idempotente; use a conexão administrativa.\nBEGIN;\n${schema}\n${featureMigration}\n${runtimeGrants}\nCOMMIT;\n`;
+}
 export async function main() {
+  if (process.argv.includes('--sql')) {
+    process.stdout.write(migrationSql());
+    return;
+  }
   const target = migrationTarget();
   const database = await createDatabase(
     target.url,
     process.env.LOCAL_DATABASE_PATH ?? '.data/agenda',
   );
-  // Dizer onde foi aplicada evita a dúvida que motivou a precedência acima.
-  console.log(`Schema do AgendaMagna aplicado em ${target.label}. Migração idempotente.`);
-  await database.close();
+  try {
+    await database.query(runtimeGrants);
+    // Dizer onde foi aplicada evita a dúvida que motivou a precedência acima.
+    console.log(`Schema do AgendaMagna aplicado em ${target.label}. Migração idempotente.`);
+  } finally {
+    await database.close();
+  }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
   main().catch((error) => {

@@ -3733,6 +3733,17 @@ label {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.finance-deleted-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.finance-deleted-filter input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  flex-shrink: 0;
+}
 .finance-row-actions {
   display: flex;
   flex-wrap: wrap;

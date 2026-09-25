@@ -62,7 +62,6 @@ export function Finance({
   const [data, setData] = useState<FinanceData | null>(null);
   const [busy, setBusy] = useState(false),
     [loading, setLoading] = useState(false);
-  const [reload, setReload] = useState(0);
   const [error, setError] = useState(''),
     [notice, setNotice] = useState('');
   const [entry, setEntry] = useState<FinanceEntry | 'new' | null>(null);
@@ -98,12 +97,14 @@ export function Finance({
       if (current === generation.current) setLoading(false);
     }
   }, [offline, month, page, deleted, kind, category, fromDate, toDate]);
+  const latestLoad = useRef(load);
+  latestLoad.current = load;
   useEffect(() => {
     void load();
     return () => {
       generation.current++;
     };
-  }, [load, revision, reload]);
+  }, [load, revision]);
   async function action(commands: Command[]) {
     if (lock.current) return;
     if (offline || !navigator.onLine) {
@@ -132,7 +133,7 @@ export function Finance({
       setTemplate(null);
       setPrefill(null);
       await refresh();
-      setReload((n) => n + 1);
+      await latestLoad.current();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -376,7 +377,7 @@ export function Finance({
           <section className="finance-panel">
             <div className="list-toolbar">
               <h2>Lançamentos</h2>
-              <label>
+              <label className="finance-deleted-filter">
                 <input
                   type="checkbox"
                   checked={deleted}
