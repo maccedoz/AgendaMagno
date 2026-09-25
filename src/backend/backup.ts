@@ -1,6 +1,8 @@
 import { categorySchema, entrySchema, planItemSchema, templateSchema } from './finance/types';
+import { goalLogSchema, goalSchema } from './goals/types';
 import { z } from 'zod';
 import { db, loadState, lock, saveState, type Database } from './db';
+import { loadGoals } from './goals/store';
 import { DomainError, emptyState, normalize } from './domain';
 import { checklistSchema, dateSchema, recurrenceSchema, tagsSchema } from './domain/types';
 const timestamp = z.string().datetime();
@@ -66,7 +68,17 @@ const backupV2 = backupV1.extend({
     })
     .strict(),
 });
-export const backupSchema = z.union([backupV1, backupV2]);
+// Versão 3: metas e registros. Arquivos anteriores não têm metas, e as atuais são mantidas.
+const backupV3 = backupV2.extend({
+  version: z.literal(3),
+  goals: z
+    .object({
+      goals: z.array(goalSchema).max(1000),
+      logs: z.array(goalLogSchema).max(200000),
+    })
+    .strict(),
+});
+export const backupSchema = z.union([backupV1, backupV2, backupV3]);
 export async function exportBackup(connection?: Database) {
   const database = connection ?? (await db());
   return database.transaction(async (tx) => {
@@ -74,8 +86,9 @@ export async function exportBackup(connection?: Database) {
     const state = await loadState(tx, true);
     return {
       format: 'AgendaMagno',
-      version: 2,
+      version: 3,
       finance: state.finance,
+      goals: await loadGoals(tx),
       createdAt: new Date().toISOString(),
       groups: state.groups,
       tasks: state.tasks,
@@ -112,7 +125,25 @@ export async function importBackup(
     if (task.checklist && new Set(task.checklist.map((i) => i.id)).size !== task.checklist.length)
       throw new DomainError('Checklist com identificadores duplicados.');
   }
-  if (value.version === 2) {
+  if (value.version === 3) {
+    const goalIds = new Set(value.goals.goals.map((g) => g.id));
+    if (
+      goalIds.size !== value.goals.goals.length ||
+      new Set(value.goals.logs.map((l) => l.id)).size !== value.goals.logs.length
+    )
+      throw new DomainError('O arquivo contém metas ou registros duplicados.');
+    if (value.goals.logs.some((l) => !goalIds.has(l.goalId)))
+      throw new DomainError('Um registro aponta para uma meta inexistente.');
+    const active = value.goals.goals.filter((g) => !g.archivedAt).map((g) => normalize(g.title));
+    if (new Set(active).size !== active.length)
+      throw new DomainError('O arquivo contém metas ativas com o mesmo nome.');
+    // O cálculo da ofensiva lê alvos e regras em ordem de data.
+    for (const goal of value.goals.goals) {
+      goal.targets.sort((a, b) => a.from.localeCompare(b.from));
+      goal.schedules.sort((a, b) => a.from.localeCompare(b.from));
+    }
+  }
+  if (value.version !== 1) {
     const categories = value.finance.categories;
     const entries = value.finance.entries;
     if (
@@ -153,7 +184,8 @@ export async function importBackup(
     if (before.settings.revision !== expectedRevision)
       throw new DomainError('A agenda mudou. Atualize e revise a importação novamente.', 409);
     const state = emptyState();
-    if (value.version === 2) state.finance = value.finance;
+    if (value.version !== 1) state.finance = value.finance;
+    if (value.version === 3) state.goals = value.goals;
     state.groups = value.groups;
     state.tasks = value.tasks.map((t) =>
       t.trashReason === 'completed'

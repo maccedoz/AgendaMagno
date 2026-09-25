@@ -1,5 +1,6 @@
 import type { Database } from './db';
-import { db, lock } from './db';
+import { db } from './db';
+import { loadGoals } from './goals/store';
 import { DomainError, type Group, type Task } from './domain';
 import type { FinanceCategory, FinanceEntry } from './finance/types';
 import { addDays, resolveWeek, weekSummary } from './summary';
@@ -13,8 +14,7 @@ export async function summarySnapshot(input: unknown, connection?: Database, now
   if (start < '2000-01-01' || start > '2999-12-25')
     throw new DomainError('Semana fora do intervalo aceito.');
   const database = connection ?? (await db());
-  return database.transaction(async (tx) => {
-    await lock(tx);
+  return database.read(async (tx) => {
     const tasks = (
       await tx.query<{ data: Task }>('SELECT data FROM agenda_tasks ORDER BY id')
     ).rows.map((r) => r.data);
@@ -31,6 +31,6 @@ export async function summarySnapshot(input: unknown, connection?: Database, now
         [addDays(start, -7), addDays(start, 6)],
       )
     ).rows.map((r) => r.data);
-    return weekSummary({ tasks, groups }, { categories, entries }, start, now);
+    return weekSummary({ tasks, groups }, { categories, entries }, start, now, await loadGoals(tx));
   });
 }

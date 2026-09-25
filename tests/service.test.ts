@@ -276,3 +276,42 @@ test('mensagem é aceita e gravada antes de executar, e o trabalho não depende 
   assert.equal(depois.accepted.status, 'done');
   assert.equal(depois.accepted.reply, concluido.reply);
 });
+
+test('a conversa informa a etapa: lendo o pedido, escrevendo a resposta e pronta', async () => {
+  type Row = { id: string; status: string; stage: string | null; reply: string | null };
+  const stage = async (id: string) =>
+    ((await snapshot(database)).messages as Row[]).find((m) => m.id === id)!;
+  let interpreted!: () => void;
+  const interpreting = new Promise<void>((resolve) => (interpreted = resolve));
+  let rewritten!: () => void;
+  const rewriting = new Promise<void>((resolve) => (rewritten = resolve));
+  let polishing!: () => void;
+  const polishStarted = new Promise<void>((resolve) => (polishing = resolve));
+  const started = await startChat(
+    'Anota: Com etapas',
+    'stage-1',
+    database,
+    async (): Promise<Command[]> => {
+      await interpreting;
+      return [{ op: 'create_task', title: 'Com etapas' }];
+    },
+    async (original) => {
+      polishing();
+      await rewriting;
+      return `Feito! ${original}`;
+    },
+  );
+  const running = started.run!();
+  assert.equal((await stage(started.accepted.id)).stage, 'reading');
+  interpreted();
+  await polishStarted;
+  // Gravado, mas ainda sendo reescrito: a tela mostra "escrevendo" em vez do texto cru.
+  const writing = await stage(started.accepted.id);
+  assert.equal(writing.status, 'done');
+  assert.equal(writing.stage, 'writing');
+  rewritten();
+  await running;
+  const done = await stage(started.accepted.id);
+  assert.equal(done.stage, null);
+  assert.match(done.reply!, /^Feito! #\d+ Com etapas/);
+});

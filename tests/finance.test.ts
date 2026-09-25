@@ -132,7 +132,16 @@ test('edição concorrente, lixeira, restauração e categorias arquivadas', asy
   assert.equal((await financeSnapshot({ month: '2026-09' }, db)).totals.expense, 0);
   assert.equal((await financeSnapshot({ month: '2026-09', deleted: 'true' }, db)).total, 1);
   expense = (await loadFinance(db)).entries.find((e) => e.id === expense.id)!;
+  // Excluído não é regravado por uma segunda exclusão: versão e histórico ficam como estão.
+  const again = await act([{ op: 'finance_delete', entry: expense.id, confirmed: true }]);
+  assert.match(again.reply ?? '', /já está entre os excluídos/);
+  assert.equal(
+    (await loadFinance(db)).entries.find((e) => e.id === expense.id)!.version,
+    expense.version,
+  );
   await act([{ op: 'finance_restore', entry: expense.id, expectedVersion: expense.version }]);
+  const active = await act([{ op: 'finance_restore', entry: expense.id }]);
+  assert.match(active.reply ?? '', /já está ativo/);
   assert.equal((await financeSnapshot({ month: '2026-09' }, db)).totals.result, 295710);
   await assert.rejects(act([{ op: 'undo' }]), /Financeiro/);
 });
@@ -208,9 +217,9 @@ test('exclusão pela conversa pede confirmação e aceita cancelar', async () =>
   assert.ok(execute(result.state, confirmed, 'web').state.finance!.entries[0].deletedAt);
   assert.equal(pendingAnswer(result.state, 'cancelar', 'web', new Date())![0].op, 'clarify');
 });
-test('backup v2, importação v1 preservando finanças, validação e invalidação de interpretação', async () => {
+test('backup v3, importação v1 preservando finanças, validação e invalidação de interpretação', async () => {
   const backup = await exportBackup(db);
-  assert.equal(backup.version, 2);
+  assert.equal(backup.version, 3);
   assert.ok(backup.finance);
   const old = {
     format: backup.format,

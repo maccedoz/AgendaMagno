@@ -1,4 +1,5 @@
 import { financeCommand, isFinance } from '../finance/rules';
+import { goalCommand, isGoal } from '../goals/rules';
 import { randomUUID } from 'node:crypto';
 import { formatWeekSummary, resolveWeek, weekSummary } from '../summary';
 import { nextDue } from './recurrence';
@@ -77,9 +78,13 @@ export function execute(
   let barrier = false;
   let mutation = false;
   let commandIndex = 0;
-  const touch = (t: Task, action: string) => {
+  // Guarda o estado anterior para o desfazer, sem versão nem histórico novo.
+  const remember = (t: Task) => {
     if (!touched.has(t.id))
       touched.set(t.id, structuredClone(original.tasks.find((old) => old.id === t.id) ?? null));
+  };
+  const touch = (t: Task, action: string) => {
+    remember(t);
     t.version++;
     t.updatedAt = now.toISOString();
     state.history.push({
@@ -93,8 +98,10 @@ export function execute(
   };
   try {
     for (const c of commands) {
-      if (isFinance(c)) {
-        const result = financeCommand(state, c, channel, now, commands);
+      if (isFinance(c) || isGoal(c)) {
+        const result = isGoal(c)
+          ? goalCommand(state, c, channel, now, commands)
+          : financeCommand(state, c, channel, now, commands);
         replies.push(result.reply);
         if (result.changed) mutation = barrier = true;
         commandIndex++;
@@ -122,7 +129,9 @@ export function execute(
           if (!state.finance)
             throw new DomainError('Dados financeiros indisponíveis. Atualize e tente novamente.');
           const start = resolveWeek(c.date ? { week: c.date } : {}, now);
-          replies.push(formatWeekSummary(weekSummary(state, state.finance, start, now)));
+          replies.push(
+            formatWeekSummary(weekSummary(state, state.finance, start, now, state.goals)),
+          );
           break;
         }
         case 'set_natural_reply':
@@ -232,7 +241,14 @@ export function execute(
             let count = 0;
             for (const task of state.tasks.filter((t) => t.groupId === group.id)) {
               task.groupId = null;
-              if (c.deleteTasks && !task.trashedAt) trash(task, state, now, false);
+              // Na lixeira só se entra e se sai: a tarefa descartada perde o vínculo com o grupo
+              // que deixou de existir (o backup exige grupos válidos), mas não ganha versão nem
+              // histórico, como se nada tivesse acontecido com ela.
+              if (task.trashedAt) {
+                remember(task);
+                continue;
+              }
+              if (c.deleteTasks) trash(task, state, now, false);
               touch(
                 task,
                 c.deleteTasks
@@ -474,11 +490,14 @@ export function execute(
           }
           for (const change of op.changes) {
             const t = state.tasks.find((t) => t.id === change.taskId)!;
+            // Tarefa que estava e continua na lixeira só recupera o vínculo com o grupo.
+            const stillTrashed = Boolean(t.trashedAt && change.before?.trashedAt);
             if (change.before) {
               const version = t.version;
               Object.assign(t, change.before, { version });
             } else trash(t, state, now, false);
-            touch(t, 'Alteração desfeita');
+            if (stillTrashed) remember(t);
+            else touch(t, 'Alteração desfeita');
           }
           for (const change of op.groupChanges ?? []) {
             touchGroup(change.id);
@@ -583,10 +602,10 @@ export function pendingAnswer(
       ];
     return [{ op: 'create_group', name: p.createGroup }, ...commands];
   }
-  if (['amount', 'description', 'kind'].includes(p.field) && !p.options.length) {
+  if (['amount', 'description', 'kind', 'target'].includes(p.field) && !p.options.length) {
     // O schema recusa acima de 40 caracteres em amount; sem esta checagem a resposta comprida
     // estourava como erro de validação e chegava como “não foi possível processar o pedido”.
-    if (p.field === 'amount' && text.trim().length > 40)
+    if ((p.field === 'amount' || p.field === 'target') && text.trim().length > 40)
       throw new DomainError('Responda só com o valor, como 42,90.');
     if (p.field === 'description' && text.trim().length > 5000)
       throw new DomainError('A descrição precisa ter até 5.000 caracteres.');
@@ -643,7 +662,8 @@ function applyChoice(
       return [
         { op: 'clarify', question: 'Exclusão cancelada. Envie o próximo pedido ou retome a fila.' },
       ];
-    for (const c of commands) if (c.op === 'finance_delete') c.confirmed = true;
+    for (const c of commands)
+      if (c.op === 'finance_delete' || c.op === 'goal_delete') c.confirmed = true;
   } else if (pending.field === 'deleteTasks') {
     for (const c of commands)
       if (c.op === 'delete_group' && c.deleteTasks === undefined)

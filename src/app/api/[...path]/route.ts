@@ -1,5 +1,6 @@
 import { financeSnapshot } from '@/backend/finance/store';
 import { summarySnapshot } from '@/backend/summary-store';
+import { goalsSnapshot } from '@/backend/goals/store';
 import {
   deleteFinancePlanItem,
   financePlan,
@@ -102,6 +103,7 @@ async function handler(request: Request, context: { params: Promise<{ path: stri
       return reply(await financePlan(Object.fromEntries(new URL(request.url).searchParams)));
     if (method === 'GET' && path === 'summary')
       return reply(await summarySnapshot(Object.fromEntries(new URL(request.url).searchParams)));
+    if (method === 'GET' && path === 'goals') return reply(await goalsSnapshot());
     if (method === 'GET' && path === 'notes')
       return reply(await listNotes(Object.fromEntries(new URL(request.url).searchParams)));
     if (method === 'GET' && path === 'notes/note')

@@ -245,6 +245,9 @@ test('falha de banco na API diz o que conferir em vez de um aviso genérico', as
     transaction: async () => {
       throw Object.assign(new Error('detalhe interno do postgres'), { code });
     },
+    read: async () => {
+      throw Object.assign(new Error('detalhe interno do postgres'), { code });
+    },
     close: async () => {},
   });
   const mensagem = async (code: string) => {

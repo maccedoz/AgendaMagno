@@ -240,6 +240,12 @@ export function financeCommand(
     reply = `${kind === 'income' ? 'Receita' : 'Despesa'} registrada: ${money(amountCents)} — ${item.date} — ${cat.name} — ${description}.`;
   } else if (['finance_update', 'finance_delete', 'finance_restore'].includes(c.op)) {
     const item = entry();
+    // Excluído só sai da lixeira restaurado, e restaurar o que está ativo não muda nada: nos
+    // dois casos a resposta avisa sem gravar versão nem histórico.
+    if (c.op === 'finance_delete' && item.deletedAt)
+      return { changed: false, reply: `${item.description} já está entre os excluídos.` };
+    if (c.op === 'finance_restore' && !item.deletedAt)
+      return { changed: false, reply: `${item.description} já está ativo.` };
     if (c.op === 'finance_delete') {
       // Um pedido como "apague os lançamentos do mercado" traz várias exclusões. A confirmação
       // é uma só para o pedido inteiro: perguntar item por item obrigava a responder "sim" a

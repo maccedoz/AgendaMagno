@@ -91,6 +91,9 @@ export function project(data: Data, queue: Pending[]): Data {
       }
       const task = result.tasks.find((t) => `#${t.id}` === c.task);
       if (!task) continue;
+      // Na lixeira só vale restaurar; o servidor recusa o resto, e a tela não deve fingir que
+      // aceitou.
+      if (task.trashedAt && c.op !== 'restore_task') continue;
       if (c.op === 'update_task') {
         for (const key of [
           'title',

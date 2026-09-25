@@ -74,6 +74,18 @@ CREATE TABLE IF NOT EXISTS agenda_note_files (
   content text NOT NULL
 );
 CREATE INDEX IF NOT EXISTS agenda_note_files_note ON agenda_note_files(note_id);
+ALTER TABLE agenda_messages ADD COLUMN IF NOT EXISTS stage text;
+CREATE TABLE IF NOT EXISTS agenda_goals (id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS agenda_goal_logs (
+  id text PRIMARY KEY, goal_id text NOT NULL, date text NOT NULL, data jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agenda_goal_logs_goal ON agenda_goal_logs (goal_id, date);
+CREATE TABLE IF NOT EXISTS agenda_goal_push_sent (
+  goal_id text NOT NULL, day text NOT NULL, kind text NOT NULL,
+  sent_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (goal_id, day, kind)
+);
+CREATE INDEX IF NOT EXISTS agenda_messages_received ON agenda_messages (received_at);
 CREATE INDEX IF NOT EXISTS agenda_notes_updated ON agenda_notes ((data->>'updatedAt'));
 CREATE INDEX IF NOT EXISTS agenda_finance_period ON agenda_finance_entries ((data->>'date'));
 CREATE INDEX IF NOT EXISTS agenda_finance_category ON agenda_finance_entries ((data->>'categoryId'));

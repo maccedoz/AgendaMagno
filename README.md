@@ -43,6 +43,18 @@ Uma explicação sem termos técnicos de tudo o que o aplicativo faz hoje.
 - Corrigir, excluir e restaurar lançamentos; arquivar categorias que não usa mais sem perder o histórico.
 - Falar com o assistente: “gastei 42,90 no almoço hoje”, “recebi 3 mil de salário ontem”, “quanto gastei com comida este mês?”.
 
+**Metas**
+
+- Acompanhar hábitos com alvo por dia, por semana ou por mês: beber 2,5 L de água por dia, ler 10 páginas por dia, treinar 6 vezes na semana, ler 300 páginas no mês.
+- Registrar com um toque (+250 ml, +1 treino, “Feito”) ou pela conversa: “bebi 500 ml de água”, “treinei hoje”, “como estão minhas metas?”.
+- Manter a ofensiva, como no Duolingo: cada período cumprido soma um; se o período termina sem a meta batida, a ofensiva volta a zero. O dia de ontem ainda aceita registro até as 12h.
+- Ganhar um congelamento a cada 7 períodos seguidos (até 2 guardados), que salva sozinho um período perdido.
+- Ver os dias perfeitos: dias seguidos com todas as metas diárias cumpridas.
+- Escolher se uma meta de vezes conta no máximo uma por dia (dois treinos no mesmo dia valem 1) ou cada registro.
+- Pausar uma meta nas férias ou numa doença sem perder a ofensiva, arquivar e mudar o alvo, que vale a partir do período atual.
+- Receber um lembrete por push no horário escolhido quando a meta ainda não foi cumprida, e às 21h quando uma ofensiva de 3 ou mais está em risco.
+- Ver as metas da semana no Resumo da semana. As metas precisam de internet.
+
 **Anotações**
 
 - Guardar textos soltos, sem prazo nem cobrança: cada um com um título e um espaço para escrever à vontade.
@@ -59,7 +71,7 @@ Uma explicação sem termos técnicos de tudo o que o aplicativo faz hoje.
 
 - Entrar com senha, marcar o aparelho como confiável por 90 dias e ver a lista de dispositivos conectados, encerrando o acesso de qualquer um deles.
 - Ligar a verificação em duas etapas por aplicativo autenticador, com códigos de recuperação para guardar.
-- Baixar uma cópia de tudo (tarefas, grupos e finanças) e restaurar depois. As anotações e seus arquivos ainda não entram nessa cópia.
+- Baixar uma cópia de tudo (tarefas, grupos, finanças e metas) e restaurar depois. As anotações e seus arquivos ainda não entram nessa cópia.
 - Escolher tema claro ou escuro. Tudo em português, com datas no fuso da Bahia.
 
 O nome que aparece na tela é **AgendaMagna**. O pacote, as tabelas e o campo de identificação do arquivo de backup seguem com o nome antigo, para não invalidar os backups já salvos.
@@ -406,7 +418,16 @@ Cada anexo pode ter até 3 MB e cada anotação aceita até 10 arquivos. O limit
 
 Anotações exigem conexão e **não entram no arquivo de exportação**. Restaurar um backup não apaga nem devolve anotações — elas ficam intocadas. Para não perdê-las, conte com o backup do PostgreSQL.
 
-### Migração desta entrega
+### Migração das metas e do chat em etapas
+
+Execute `npm run db:migrate` com a conexão administrativa antes de publicar. A migração cria `agenda_goals`, `agenda_goal_logs` e `agenda_goal_push_sent`, acrescenta a coluna `stage` em `agenda_messages` (a etapa do pedido que a conversa mostra) e um índice por data de recebimento das mensagens. Sem ela, o app avisa que falta uma coluna nova. Para um papel `agenda_runtime` já existente, execute também:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON agenda_goals, agenda_goal_logs, agenda_goal_push_sent
+  TO agenda_runtime;
+```
+
+### Migração do financeiro e das anotações
 
 Execute `npm run db:migrate` com a conexão administrativa antes de publicar. A migração acrescenta `agenda_finance_categories`, `agenda_finance_entries`, `agenda_finance_templates`, `agenda_finance_plan`, `agenda_notes` e `agenda_note_files`, seus índices e dez categorias iniciais, sem apagar tarefas nem duplicar categorias em execuções posteriores. Bancos locais aplicam a migração na inicialização.
 

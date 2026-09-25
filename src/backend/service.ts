@@ -1,9 +1,20 @@
 import { needsFinance } from './finance/rules';
+import { needsGoals } from './goals/rules';
+import { loadGoals } from './goals/store';
 import { loadFinance } from './finance/store';
 import { panelCommandsSchema } from './domain';
 import { randomUUID } from 'node:crypto';
-import { databaseHint, db, loadState, saveState, lock, type Database, type Sql } from './db';
-import { DomainError, execute, purge, UNSUPPORTED } from './domain';
+import {
+  databaseHint,
+  db,
+  loadState,
+  loadView,
+  saveState,
+  lock,
+  type Database,
+  type Sql,
+} from './db';
+import { DomainError, execute, purge, UNSUPPORTED, type State } from './domain';
 import { interpret } from './interpreter';
 import { generateReply, listProviders } from './llm';
 
@@ -21,7 +32,7 @@ const interrupted = 'O processamento foi interrompido. Reenvie o pedido para ten
 
 async function expireInterrupted(tx: Sql) {
   await tx.query(
-    `UPDATE agenda_messages SET status='failed',error=$1,lease_token=NULL,lease_until=NULL,updated_at=now()
+    `UPDATE agenda_messages SET status='failed',error=$1,stage=NULL,lease_token=NULL,lease_until=NULL,updated_at=now()
      WHERE channel='web' AND status='processing' AND lease_until<now()`,
     [interrupted],
   );
@@ -43,36 +54,76 @@ async function trimLogs(tx: Sql, now: Date) {
   await tx.query('DELETE FROM agenda_limits WHERE expires_at<$1', [now.toISOString()]);
   await tx.query('DELETE FROM agenda_sessions WHERE expires_at<$1', [now.toISOString()]);
 }
-export async function snapshot(database?: Database) {
-  const connection = database ?? (await db());
-  const data = await connection.transaction(async (tx) => {
+// Mensagens recentes da conversa. `expired` marca um pedido cujo prazo acabou sem resposta,
+// para a leitura saber que precisa da manutenção; não vai para a tela.
+async function recentMessages(sql: Sql) {
+  return (
+    await sql.query<Record<string, unknown> & { expired: boolean }>(
+      `SELECT id,channel,CASE WHEN channel='web' THEN body ELSE NULL END AS body,reply,status,error,created_at,
+         CASE WHEN stage='writing' AND updated_at < now()-interval '90 seconds' THEN NULL ELSE stage END AS stage,
+         (status='processing' AND lease_until<now()) AS expired
+       FROM agenda_messages
+       WHERE channel IN ('web','panel') AND (body IS NOT NULL OR reply IS NOT NULL)
+       ORDER BY received_at DESC,id DESC LIMIT 50`,
+    )
+  ).rows;
+}
+// Limpeza que a leitura só dispara quando há o que fazer: purgar a lixeira vencida ou
+// encerrar um pedido interrompido. Antes ela rodava a cada leitura, com a trava da agenda, e o
+// chat consulta o estado a cada segundo enquanto espera a resposta.
+async function maintain(connection: Database, now: Date) {
+  await connection.transaction(async (tx) => {
     await lock(tx);
     await expireInterrupted(tx);
-    const { state } = await currentState(tx);
-    await trimLogs(tx, new Date());
-    const messages = (
-      await tx.query(
-        `SELECT id,channel,CASE WHEN channel='web' THEN body ELSE NULL END AS body,reply,status,error,created_at FROM agenda_messages
-         WHERE channel IN ('web','panel') AND (body IS NOT NULL OR reply IS NOT NULL)
-         ORDER BY received_at DESC,id DESC LIMIT 50`,
-      )
-    ).rows;
-    return {
-      tasks: state.tasks,
-      groups: state.groups,
-      history: state.history,
-      settings: {
-        retentionDays: state.settings.retentionDays,
-        revision: state.settings.revision,
-        naturalReply: state.settings.naturalReply !== false,
-      },
-      messages,
-      storage: process.env.DATABASE_MODE === 'local' ? 'local' : 'neon',
-    };
+    await currentState(tx, now);
+    await trimLogs(tx, now);
   });
-  const { providers } = await listProviders(connection);
-  return { ...data, llm: providers.some((p) => p.enabled && p.keySet) ? 'configured' : 'none' };
 }
+export async function snapshot(database?: Database, maintained = false): Promise<Snapshot> {
+  const connection = database ?? (await db());
+  const now = new Date();
+  // Três leituras independentes, em paralelo: cada uma pega a própria conexão do pool.
+  const [view, messages, { providers }] = await Promise.all([
+    // Um comando só já é uma leitura consistente; não precisa de transação.
+    loadView(connection),
+    recentMessages(connection),
+    listProviders(connection),
+  ]);
+  const purgeDue = view.tasks.some(
+    (t) => t.trashedAt && t.purgeAt && t.purgeAt <= now.toISOString(),
+  );
+  if (!maintained && (purgeDue || messages.some((m) => m.expired))) {
+    await maintain(connection, now);
+    return snapshot(connection, true);
+  }
+  // O histórico financeiro vencido some da tela como o purge faria; a gravação real acontece
+  // na próxima alteração ou na limpeza diária.
+  const historyCutoff = new Date(
+    now.getTime() - view.settings.retentionDays * 86400000,
+  ).toISOString();
+  return {
+    tasks: view.tasks,
+    groups: view.groups,
+    history: view.history.filter((h) => h.taskId !== 0 || h.at >= historyCutoff),
+    settings: {
+      retentionDays: view.settings.retentionDays,
+      revision: view.settings.revision,
+      naturalReply: view.settings.naturalReply !== false,
+    },
+    messages: messages.map(({ expired: _expired, ...m }) => m),
+    storage: process.env.DATABASE_MODE === 'local' ? 'local' : 'neon',
+    llm: providers.some((p) => p.enabled && p.keySet) ? 'configured' : 'none',
+  };
+}
+type Snapshot = {
+  tasks: State['tasks'];
+  groups: State['groups'];
+  history: State['history'];
+  settings: { retentionDays: number; revision: number; naturalReply: boolean };
+  messages: Record<string, unknown>[];
+  storage: string;
+  llm: 'configured' | 'none';
+};
 export async function panelAction(commands: unknown, requestId: string, database?: Database) {
   const connection = database ?? (await db());
   return connection.transaction(async (tx) => {
@@ -90,6 +141,7 @@ export async function panelAction(commands: unknown, requestId: string, database
     const { state: before } = await currentState(tx);
     const validated = panelCommandsSchema.parse(commands);
     if (validated.some(needsFinance)) before.finance = await loadFinance(tx);
+    if (validated.some(needsGoals)) before.goals = await loadGoals(tx);
     const result = execute(before, validated, 'panel');
     await saveState(tx, before, result.state);
     await tx.query(
@@ -175,9 +227,9 @@ export async function startChat(
       created_at: now,
     };
     await tx.query(
-      `INSERT INTO agenda_messages(id,external_id,channel,body,status,lease_token,lease_until,created_at)
-       VALUES($1,$2,'web',$3,'processing',$4,now()+interval '150 seconds',$5)
-       ON CONFLICT(id) DO UPDATE SET status='processing',reply=NULL,error=NULL,lease_token=$4,lease_until=now()+interval '150 seconds',updated_at=now()`,
+      `INSERT INTO agenda_messages(id,external_id,channel,body,status,stage,lease_token,lease_until,created_at)
+       VALUES($1,$2,'web',$3,'processing','reading',$4,now()+interval '150 seconds',$5)
+       ON CONFLICT(id) DO UPDATE SET status='processing',stage='reading',reply=NULL,error=NULL,lease_token=$4,lease_until=now()+interval '150 seconds',updated_at=now()`,
       [message.id, message.external_id, text, token, now.toISOString()],
     );
     return { message, state };
@@ -189,6 +241,10 @@ export async function startChat(
     // fica fora do try justamente para que nada ali possa devolver "falhou" para um trabalho que
     // já foi gravado.
     let committed: { id: string; status: string; reply: string; natural: boolean };
+    // A redação só roda quando pode mudar o texto; enquanto roda, a tela mostra "escrevendo" em
+    // vez da versão crua que seria trocada segundos depois.
+    const willPolish = (reply: string, natural: boolean) =>
+      natural && Boolean(reply.trim()) && !reply.startsWith(UNSUPPORTED);
     try {
       const commands = await interpreter(
         state,
@@ -211,19 +267,19 @@ export async function startChat(
             409,
           );
         if (commands.some(needsFinance)) before.finance = await loadFinance(tx);
+        if (commands.some(needsGoals)) before.goals = await loadGoals(tx);
         const result = execute(before, commands, 'web', new Date(message.created_at));
         await saveState(tx, before, result.state);
         const status = result.clarification ? 'clarification' : 'done';
+        // Respostas com números calculados pela agenda (finanças, metas) não são reescritas.
+        const natural =
+          !commands.some((c) => needsFinance(c) || needsGoals(c)) &&
+          result.state.settings.naturalReply !== false;
         await tx.query(
-          'UPDATE agenda_messages SET status=$2,reply=$3,error=NULL,lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1',
-          [message.id, status, result.reply],
+          'UPDATE agenda_messages SET status=$2,reply=$3,stage=$4,error=NULL,lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1',
+          [message.id, status, result.reply, willPolish(result.reply, natural) ? 'writing' : null],
         );
-        return {
-          id: message.id,
-          status,
-          reply: result.reply,
-          natural: !commands.some(needsFinance) && result.state.settings.naturalReply !== false,
-        };
+        return { id: message.id, status, reply: result.reply, natural };
       });
     } catch (error) {
       // Erro do PostgreSQL vira a mesma dica que a API dá nas outras rotas: sem isso, migração
@@ -235,7 +291,7 @@ export async function startChat(
             ? `Não foi possível processar o pedido. Nenhuma alteração foi confirmada. ${databaseHint(error)}`
             : 'Não foi possível processar o pedido. Nenhuma alteração foi confirmada.';
       await connection.query(
-        `UPDATE agenda_messages SET status='failed',error=$3,lease_token=NULL,lease_until=NULL,updated_at=now()
+        `UPDATE agenda_messages SET status='failed',error=$3,stage=NULL,lease_token=NULL,lease_until=NULL,updated_at=now()
        WHERE id=$1 AND status='processing' AND lease_token=$2`,
         [message.id, token, safe],
       );
@@ -244,9 +300,9 @@ export async function startChat(
     // Fora da transação de propósito: é uma chamada de rede, e prender a linha da agenda durante
     // ela bloquearia qualquer outra escrita pelo tempo da resposta do provedor.
     const reply = await polish(committed.reply, text, committed.natural, connection, rewrite);
-    if (reply !== committed.reply)
+    if (willPolish(committed.reply, committed.natural))
       await connection
-        .query('UPDATE agenda_messages SET reply=$2,updated_at=now() WHERE id=$1', [
+        .query('UPDATE agenda_messages SET reply=$2,stage=NULL,updated_at=now() WHERE id=$1', [
           committed.id,
           reply,
         ])

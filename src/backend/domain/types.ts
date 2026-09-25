@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { FinanceState } from '../finance/types';
+import { GOAL_ICONS } from '../goals/icons';
+import type { GoalState } from '../goals/types';
 
 export const TIMEZONE = 'America/Bahia';
 export type Status = 'pending' | 'in_progress' | 'completed';
@@ -74,7 +76,9 @@ export type PendingField =
   | 'amount'
   | 'kind'
   | 'description'
-  | 'confirmed';
+  | 'confirmed'
+  | 'goal'
+  | 'target';
 export interface PendingOption {
   ref: string;
   label: string;
@@ -100,6 +104,7 @@ export interface Conversation {
 }
 export interface State {
   finance?: FinanceState;
+  goals?: GoalState;
   tasks: Task[];
   groups: Group[];
   history: History[];
@@ -189,6 +194,16 @@ export const commandSchema = z
       'set_retention',
       'set_natural_reply',
       'week_summary',
+      'goal_create',
+      'goal_update',
+      'goal_archive',
+      'goal_restore',
+      'goal_pause',
+      'goal_resume',
+      'goal_delete',
+      'goal_log',
+      'goal_delete_log',
+      'goal_status',
       'undo',
       'help',
       'clarify',
@@ -236,6 +251,20 @@ export const commandSchema = z
     days: z.number().int().min(1).max(3650).optional(),
     expectedVersion: z.number().int().nonnegative().optional(),
     question: z.string().min(1).max(600).optional(),
+    goal: z.string().min(1).max(100).optional(),
+    goalKind: z.enum(['amount', 'count']).optional(),
+    goalIcon: z.enum(GOAL_ICONS).optional(),
+    unit: z.string().trim().min(1).max(20).optional(),
+    period: z.enum(['daily', 'weekly', 'monthly']).optional(),
+    target: z.string().min(1).max(40).optional(),
+    weekdays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+    countDays: z.boolean().optional(),
+    reminderTime: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .nullable()
+      .optional(),
+    quickAdds: z.array(z.number().positive().max(1_000_000)).max(4).optional(),
   })
   .strict();
 export type Command = z.infer<typeof commandSchema>;

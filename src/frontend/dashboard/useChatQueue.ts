@@ -118,11 +118,14 @@ export function useChatQueue(data: Data | null, refresh: () => Promise<void>, of
       }
     })();
   }, [items, data, ready, externalId, offline, pause, serverBusy, refresh]);
+  // A resposta pode estar sendo reescrita depois de o pedido terminar: a consulta continua até
+  // a versão final chegar.
+  const polishing = !!data?.messages.some((m) => m.channel === 'web' && m.stage === 'writing');
   useEffect(() => {
-    if (!serverBusy && !items.some((i) => i.status === 'running')) return;
+    if (!serverBusy && !polishing && !items.some((i) => i.status === 'running')) return;
     const timer = setInterval(() => void refresh(), 1000);
     return () => clearInterval(timer);
-  }, [serverBusy, items, refresh]);
+  }, [serverBusy, polishing, items, refresh]);
   useEffect(() => {
     if (!pending && !serverBusy) return;
     const unload = (e: BeforeUnloadEvent) => {

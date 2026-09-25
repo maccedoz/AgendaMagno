@@ -9,7 +9,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
   agenda_push_subscriptions, agenda_push_sent,
   agenda_finance_entries, agenda_finance_categories, agenda_finance_templates,
   agenda_finance_plan,
-  agenda_notes, agenda_note_files
+  agenda_notes, agenda_note_files,
+  agenda_goals, agenda_goal_logs, agenda_goal_push_sent
 TO agenda_runtime;
 -- Grant this role to a dedicated login created in Neon, then use that login in
 -- DATABASE_URL. It must NOT own the database/tables or inherit an admin role.
