@@ -327,6 +327,13 @@ export function execute(
         case 'update_task': {
           const t = findTask(state, c, ctx);
           if (t.trashedAt) throw new DomainError('Restaure a tarefa da lixeira antes de editar.');
+          // Pelo chat, “adicione X” chegou a virar edição de uma tarefa concluída de nome
+          // parecido: o pedido saía como feito e a tarefa “nova” ia direto para Concluídas. Como
+          // na lixeira, a concluída só muda depois de reaberta. O painel edita de propósito.
+          if (t.status === 'completed' && c.status === undefined && channel !== 'panel')
+            throw new DomainError(
+              `#${t.id} ${t.title} está concluída e não foi alterada. Para mudá-la, restaure a tarefa antes; para uma tarefa nova, peça para criar.`,
+            );
           if (c.description !== undefined && c.appendDescription !== undefined)
             throw new DomainError('Escolha substituir ou acrescentar a descrição.');
           for (const key of [

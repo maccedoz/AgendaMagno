@@ -92,6 +92,34 @@ function cleanTitles(commands: Command[]): Command[] {
     return next as Command;
   });
 }
+// “Adicione X” é tarefa nova. Com uma tarefa de nome parecido entre os candidatos, o modelo às
+// vezes devolvia update_task nela trocando o título: a tarefa antiga sumia sob o nome novo e, se
+// já estava concluída, a “nova” aparecia direto em Concluídas. Num pedido de adicionar, renomear
+// uma tarefa que a mensagem não cita pelo código só pode ser criação. O título sai do texto antes
+// da busca pelo verbo, para “renomeie para Criar relatório” não contar como pedido de adicionar.
+const ADD_REQUEST =
+  /\b(?:adicion\w*|add|anot(?:a|e|ar)|cri(?:a|e|ar)|inclu(?:a|i|ir)|nova tarefa)\b/;
+export function keepNewTasksNew(commands: Command[], text: string, state: State): Command[] {
+  let request = normalize(text);
+  for (const c of commands) if (c.title) request = request.replace(normalize(c.title), ' ');
+  if (!ADD_REQUEST.test(request)) return commands;
+  return commands.map((c) => {
+    if (c.op !== 'update_task' || !c.title) return c;
+    const code = c.task?.match(/^#?(\d+)$/)?.[1];
+    if (code && new RegExp(`(?:#|\\b(?:a|o|da|do|na|no|tarefa)\\s+)${code}\\b`).test(request))
+      return c;
+    const current = code ? state.tasks.find((t) => t.id === Number(code))?.title : c.task;
+    if (current && normalize(current) === normalize(c.title)) return c;
+    const { task: _task, expectedVersion: _version, appendDescription, ...fields } = c;
+    return {
+      ...fields,
+      op: 'create_task',
+      ...(appendDescription && fields.description === undefined
+        ? { description: appendDescription }
+        : {}),
+    };
+  });
+}
 function taskRef(text: string) {
   return text.replace(/^(?:a\s+)?(?:tarefa|atividade)\s+/i, '').trim();
 }
@@ -320,6 +348,7 @@ export async function interpret(
       id: `#${t.id}`,
       title: t.title,
       groupId: t.groupId,
+      completed: t.status === 'completed',
       trashed: Boolean(t.trashedAt),
     }));
   const system = `Você interpreta comandos de um organizador pessoal em português brasileiro. Retorne apenas JSON {"commands":[...]}.
@@ -338,6 +367,7 @@ kind: income|expense; categoryKind: income|expense|both. amount é STRING em rea
 Metas (hábitos com ofensiva): goal_create(title,target,period?,goalKind?,unit?,weekdays?,countDays?,reminderTime?), goal_update(goal,title?,target?,weekdays?,countDays?,reminderTime?), goal_archive(goal), goal_restore(goal), goal_pause(goal,fromDate?,toDate?), goal_resume(goal), goal_delete(goal), goal_log(goal,amount?,date?), goal_status(goal?).
 period: daily|weekly|monthly (padrão daily); goalKind: amount (quantidade em ml, páginas, minutos, km…) ou count (vezes: treinos, sessões). target e amount são STRING com número e unidade opcional, como "2,5 L", "500 ml", "10", "6"; não converta unidades, a agenda converte. goal é ID ou nome de uma meta do contexto. Registro de hábito (“bebi 500 ml de água”, “li 12 páginas”, “treinei hoje”, “meditei”) é goal_log na meta correspondente do contexto; em meta de vezes, sem amount vale 1. date só para “ontem” (a agenda aceita ontem até as 12h). “Quero beber 2,5 L de água por dia” é goal_create com title "Beber água", unit "ml", target "2,5 L". “Treinar 6x na semana” é goal_create com title "Treinar", period weekly, goalKind count, target "6". countDays (padrão true) conta no máximo 1 por dia; false só se a pessoa disser que cada vez conta, mesmo no mesmo dia. weekdays [0=domingo..6=sábado] só em meta diária que vale em alguns dias. reminderTime HH:mm para lembrete da meta. “Como estão minhas metas”, “quantos dias de ofensiva” é goal_status. Nunca calcule ofensivas nem totais. Registro que não corresponde a nenhuma meta do contexto é clarify perguntando se quer criar a meta. Não misture metas com tarefas: “beber água” é meta, não tarefa, quando existe a meta.
 Campos só os listados. status: pending|in_progress; priority: low|normal|high. dueDate: YYYY-MM-DD ou null; dueTime: HH:mm ou null, somente se informado. group: nome/ID, null para Caixa de entrada, "contexto" para grupo recente. task: código #N ou título exato; "contexto" somente se a referência for única. Referências primeira/segunda/terceira usam a última lista.
+Adicionar, anotar, criar ou incluir uma tarefa (“adicione X”, “anota X”, “crie X em Estágio pra segunda”) é SEMPRE create_task, mesmo que já exista tarefa de nome parecido, concluída ou na lixeira. Mensagem que é só o nome de uma tarefa, com ou sem grupo e prazo (“Preencher formulário em IC”), também é create_task. Nunca atenda esses pedidos com update_task: renomear, mover ou mudar o prazo de outra tarefa apaga o que ela era. update_task só quando a pessoa aponta uma tarefa que já existe para mudá-la (“adicione a 53 em Estágio”, “mude a data do dentista”, “coloque prioridade alta na #12”). Candidatos com completed:true já estão concluídos e com trashed:true estão na lixeira: nunca os edite com update_task; para voltar a usá-los, restore_task.
 Filtros: active (padrão), today, overdue, no_date, trash, completed, all. Concluídas ficam no histórico, fora da lixeira. Consultas de data DEVEM usar dueDate (dia exato) ou fromDate/toDate (intervalo), nunca apenas filter:active. Exemplo: “quais tarefas eu tenho pro dia 24” neste mês exige list_tasks com dueDate no dia 24 deste mês e ano. Se não foi informado mês, use o mês da mensagem; se não foi informado ano, use o ano da mensagem. Não acrescente search com a expressão de data. Retirar do grupo: update_task group:null. Finalizar/terminar: complete_task. Excluir tarefa: trash_task. Restaurar/reabrir: restore_task. Acrescentar não substitui a descrição. Prazo sozinho não cria lembrete. reminderMinutes é a antecedência em minutos, 0 no prazo (sem horário, 09:00). tags é lista de strings. recurrence: {frequency:daily|weekly|monthly,interval:inteiro positivo,weekdays?:[0=domingo..6=sábado]}; exige dueDate. Checklist é editado pelo painel, não invente UUIDs. Excluir grupo: deleteTasks:false preserva as tarefas na Caixa de entrada, true envia-as à lixeira. Se a pessoa não disse o que fazer com elas, OMITA deleteTasks — a agenda faz a pergunta com as duas opções certas e retoma a exclusão com a resposta. Não use clarify para isso.
 Quando grupo não existir, use o nome pedido: a API fará a pergunta. Para criar grupo, só use create_group se solicitado explicitamente. Nomes de tarefas repetidos: preserve o título, não escolha um ID arbitrariamente.
 Títulos e descrições (de tarefas e de lançamentos) começam com letra maiúscula, mesmo que a pessoa tenha escrito tudo em minúsculas: “comprar pão” vira “Comprar pão”. Datas relativas usam a data original. Prazo dito no pedido (“até quinta”, “para amanhã”, “dia 30”, “hoje às 19h”) vira dueDate/dueTime e SAI do título: título é só o nome da tarefa. Palavras de conversa também SAEM do título: “tbm”, “também”, “tb”, “por favor”, “pfv”, “valeu”, “obrigado”, “ok”, “aí”, “pra mim”. Em “adicione acido tbm”, o título é “acido”. Em “adicione em Trabalho o relatório até quinta”, o título é “relatório”, o grupo é “Trabalho” e dueDate é a quinta-feira do calendário acima. Data contraditória (dia da semana e número incompatíveis), vaga ou faltando informação: clarify. clarify é só para pedido que EXISTE na lista acima mas está ambíguo ou incompleto (qual tarefa, qual grupo, qual data). Pedido que a agenda não sabe fazer — enviar e-mail ou mensagem, compartilhar com outra pessoa, arquivos de áudio (o ditado do navegador envia texto), anexos, integração bancária, reorganização automática, lembrete por fora do app, operações amplas acima de 10 ações — é unsupported(question), e question diz em uma frase o que falta e o que dá para fazer no lugar. Nunca invente uma operação parecida para atender um pedido desses. Se qualquer parte de um pedido for ambígua, retorne SOMENTE clarify; se qualquer parte não for suportada, retorne SOMENTE unsupported, sem executar as outras partes.
@@ -360,7 +390,9 @@ ${turns.length ? `Conversa recente, do mais antigo ao mais novo, só para resolv
         }));
     }
     return cleanTitles(
-      commands.map((c) => (c.op === 'finance_delete' ? { ...c, confirmed: undefined } : c)),
+      keepNewTasksNew(commands, text, state).map((c) =>
+        c.op === 'finance_delete' ? { ...c, confirmed: undefined } : c,
+      ),
     );
   }
   // Sem nenhuma IA cadastrada (generateCommands devolve null antes de qualquer chamada). Os
