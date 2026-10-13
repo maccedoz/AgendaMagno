@@ -75,7 +75,7 @@ export function prepareFinancePlanItem(
     if (others.some((x) => x.categoryId === categoryId))
       throw new DomainError('Essa categoria já tem um limite. Edite o existente.');
   } else if (others.some((x) => normalize(x.name) === normalize(name)))
-    throw new DomainError('Já existe um item com esse nome.');
+    throw new DomainError(`Já existe um item com esse nome: “${name}”.`);
   return current
     ? { ...current, name, amountCents, categoryId, version: current.version + 1, updatedAt: at }
     : {
@@ -324,6 +324,22 @@ export function financeCommand(
           .filter((x) => !x.archivedAt && x.kind !== 'income')
           .map((x) => ({ ref: x.id, label: x.name })),
       );
+    // Num lote, um nome repetido não derruba os demais: o item que já existe é mantido e a
+    // resposta diz o valor dele, para a pessoa pedir a troca se quiser.
+    const same =
+      c.planKind !== 'budget'
+        ? (f.plan ?? []).find(
+            (x) => x.kind === c.planKind && normalize(x.name) === normalize(c.name!),
+          )
+        : undefined;
+    if (same) {
+      const asked = parseMoney(c.amount);
+      reply =
+        asked === same.amountCents
+          ? `${same.name} já estava no planejamento (${money(same.amountCents)}/mês); não repeti.`
+          : `${same.name} já está no planejamento com ${money(same.amountCents)}/mês (você pediu ${money(asked)}); mantive o atual. Para trocar, peça “altere ${same.name} para ${money(asked)}”.`;
+      return { changed: false, reply };
+    }
     const item = prepareFinancePlanItem(
       {
         kind: c.planKind,

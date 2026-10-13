@@ -127,14 +127,17 @@ test('lista de dez despesas vai para gastos fixos sem criar lançamentos, catego
   assert.equal((await financePlan({}, database)).items.length, 10);
 });
 
-test('duplicata no último item recusa o lote inteiro e preserva o planejamento existente', async () => {
+test('nome repetido no lote é mantido e avisado, e os demais itens entram', async () => {
   await saveFinancePlanItem({ kind: 'fixed', name: 'IA', amount: '99,00' }, database);
-  const before = await loadFinance(database);
+  await saveFinancePlanItem({ kind: 'fixed', name: 'Aluguel', amount: '450,00' }, database);
   const result = await chat(request, randomUUID(), database, model(commands));
-  assert.equal(result.status, 'failed');
-  assert.match(result.error!, /com esse nome/);
-  assert.deepEqual(await loadFinance(database), before);
-  assert.equal((await loadState(database)).history.length, 0);
+  assert.equal(result.status, 'done', result.error ?? undefined);
+  assert.match(result.reply!, /Aluguel já estava no planejamento/);
+  assert.match(result.reply!, /IA já está no planejamento com R\$\s*99,00.*pediu R\$\s*100,00/);
+  const items = (await financePlan({}, database)).items;
+  assert.equal(items.length, 10);
+  assert.equal(items.find((x) => x.name === 'IA')!.amountCents, 9900);
+  assert.equal(items.filter((x) => x.name === 'Aluguel').length, 1);
 });
 
 test('valor ausente pergunta e retoma todos os gastos fixos sem gravar um lote parcial', async () => {
