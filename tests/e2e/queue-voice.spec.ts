@@ -209,3 +209,29 @@ test('sem reconhecimento de voz a digitação permanece disponível', async ({ p
   await expect(page.getByText(/Ditado indisponível neste navegador/)).toBeVisible();
   await expect(page.getByLabel('Sua mensagem')).toBeEnabled();
 });
+
+test('Ctrl+Enter envia e Enter quebra a linha; o outro modo envia com Enter', async ({ page }) => {
+  const chat = await mockChat(page);
+  await login(page);
+  const box = page.getByLabel('Sua mensagem');
+  await box.fill('Anota: pão');
+  await box.press('Enter');
+  await box.pressSequentially('leite');
+  await expect(box).toHaveValue('Anota: pão\nleite');
+  expect(chat.calls).toHaveLength(0);
+  await box.press('Control+Enter');
+  await expect.poll(() => chat.calls.map((c) => c.text)).toEqual(['Anota: pão\nleite']);
+  await expect(box).toHaveValue('');
+  chat.finish();
+  // A escolha feita nas configurações fica guardada no aparelho.
+  await page.evaluate(() => localStorage.setItem('agenda:send-key', 'enter'));
+  await page.reload();
+  await expect(page.locator('.send-hint')).toContainText('Enter envia e Shift+Enter');
+  await box.fill('A');
+  await box.press('Shift+Enter');
+  await box.pressSequentially('B');
+  await expect(box).toHaveValue('A\nB');
+  await page.screenshot({ path: 'test-results/chat-multiline.png' });
+  await box.press('Enter');
+  await expect.poll(() => chat.calls.map((c) => c.text)).toEqual(['Anota: pão\nleite', 'A\nB']);
+});

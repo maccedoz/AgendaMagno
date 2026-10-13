@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Check, MessageCircle, Monitor, Moon, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { Check, Keyboard, MessageCircle, Monitor, Moon, Sparkles, Sun, Trash2 } from 'lucide-react';
 import { offlineEnabled, remember, clearOffline, registerWorker } from './offline';
 import { Dialog } from './Dialog';
 import { PushSettings } from './PushSettings';
+import { readSendKey, saveSendKey, type SendKey } from './sendKey';
 import { applyTheme, readTheme, type Theme } from './theme';
 import type { Action, Data } from './types';
 
@@ -37,6 +38,12 @@ export function SettingsDialog({
   // 'system' até o primeiro render no cliente: no servidor não dá para ler a escolha guardada.
   const [theme, setTheme] = useState<Theme>('system');
   useEffect(() => setTheme(readTheme()), []);
+  const [sendKey, setSendKey] = useState<SendKey>('ctrl-enter');
+  useEffect(() => setSendKey(readSendKey()), []);
+  function chooseSendKey(next: SendKey) {
+    setSendKey(next);
+    saveSendKey(next);
+  }
   function chooseTheme(next: Theme) {
     setTheme(next);
     applyTheme(next);
@@ -182,6 +189,30 @@ export function SettingsDialog({
           redação: códigos, datas e nomes de tarefas são conferidos e não mudam. É uma segunda
           chamada por mensagem, que conta nos limites diários. Desligado, a resposta chega no
           formato direto, sem chamada extra.
+        </p>
+        <div className="setting-title">
+          <Keyboard size={20} />
+          <h3>Enviar mensagens no chat</h3>
+        </div>
+        <p className="settings-copy">Vale neste aparelho e muda na hora.</p>
+        {(
+          [
+            ['ctrl-enter', 'Ctrl+Enter envia e Enter quebra a linha'],
+            ['enter', 'Enter envia e Shift+Enter quebra a linha'],
+          ] as const
+        ).map(([value, label]) => (
+          <label className="check-label" key={value}>
+            <input
+              type="radio"
+              name="send-key"
+              checked={sendKey === value}
+              onChange={() => chooseSendKey(value)}
+            />
+            {label}
+          </label>
+        ))}
+        <p className="field-help">
+          No Mac, ⌘+Enter também envia. No celular, use o botão de enviar.
         </p>
         <div className="setting-title">
           <Trash2 size={20} />

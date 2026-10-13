@@ -3,6 +3,7 @@ import { summarySnapshot } from '@/backend/summary-store';
 import { goalsSnapshot } from '@/backend/goals/store';
 import {
   deleteFinancePlanItem,
+  financeCompare,
   financePlan,
   saveFinancePlanItem,
 } from '@/backend/finance/plan-store';
@@ -99,6 +100,8 @@ async function handler(request: Request, context: { params: Promise<{ path: stri
     if (method === 'GET' && path === 'backup') return reply(await exportBackup());
     if (method === 'GET' && path === 'finance')
       return reply(await financeSnapshot(Object.fromEntries(new URL(request.url).searchParams)));
+    if (method === 'GET' && path === 'finance/compare')
+      return reply(await financeCompare(Object.fromEntries(new URL(request.url).searchParams)));
     if (method === 'GET' && path === 'finance/plan')
       return reply(await financePlan(Object.fromEntries(new URL(request.url).searchParams)));
     if (method === 'GET' && path === 'summary')

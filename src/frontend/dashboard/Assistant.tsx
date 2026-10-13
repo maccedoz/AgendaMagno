@@ -5,6 +5,7 @@ import { ArrowRight, MessageCircle, Send, Trash2, Mic, TriangleAlert } from 'luc
 import { useChatQueue } from './useChatQueue';
 import { useDictation } from './useDictation';
 import { AssistantTurn, TypingBubble } from './AssistantReply';
+import { readSendKey, sendsMessage, SEND_KEY_EVENT, type SendKey } from './sendKey';
 import { api } from './api';
 import type { Data, Message } from './types';
 
@@ -47,6 +48,14 @@ export function Assistant({
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState('');
+  // Padrão até o primeiro render no cliente: no servidor não dá para ler a escolha guardada.
+  const [sendKey, setSendKey] = useState<SendKey>('ctrl-enter');
+  useEffect(() => {
+    const read = () => setSendKey(readSendKey());
+    read();
+    window.addEventListener(SEND_KEY_EVENT, read);
+    return () => window.removeEventListener(SEND_KEY_EVENT, read);
+  }, []);
   const end = useRef<HTMLDivElement>(null);
   // Só rola sozinho quem está no fim da conversa: quem subiu para reler não é puxado de volta.
   const pinned = useRef(true);
@@ -264,11 +273,18 @@ export function Assistant({
         </p>
       )}
       <form className="chat-composer" onSubmit={send}>
-        <input
+        <textarea
           aria-label="Sua mensagem"
+          aria-keyshortcuts={sendKey === 'enter' ? 'Enter' : 'Control+Enter'}
           autoFocus
+          rows={Math.min(6, text.split('\n').length)}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (!sendsMessage(sendKey, e)) return;
+            e.preventDefault();
+            e.currentTarget.form?.requestSubmit();
+          }}
           placeholder={
             queue.pause === 'clarification'
               ? 'Responda à pergunta acima…'
@@ -289,6 +305,12 @@ export function Assistant({
       </form>
       <div className="chat-footer">
         <span>
+          <span className="send-hint">
+            {sendKey === 'enter'
+              ? 'Enter envia e Shift+Enter quebra a linha'
+              : 'Ctrl+Enter envia e Enter quebra a linha'}{' '}
+            (mude em Configurações).{' '}
+          </span>
           A IA interpreta o pedido. A agenda valida e executa as ações. O pedido continua no
           servidor se você sair. Mensagens em espera ficam apenas nesta tela e serão perdidas ao
           sair ou recarregar.

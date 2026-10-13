@@ -11,6 +11,7 @@ import { api } from './api';
 import { today } from './format';
 import { Dialog } from './Dialog';
 import { FinancePlan } from './FinancePlan';
+import { FinanceCompare } from './FinanceCompare';
 const money = (v: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v / 100);
 const dateLabel = (v: string) => v.split('-').reverse().join('/');
@@ -64,7 +65,7 @@ export function Finance({
   const [busy, setBusy] = useState(false),
     [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
-  const [tab, setTab] = useState<'entries' | 'plan'>('entries');
+  const [tab, setTab] = useState<'entries' | 'plan' | 'compare'>('entries');
   const [error, setError] = useState(''),
     [notice, setNotice] = useState('');
   const [entry, setEntry] = useState<FinanceEntry | 'new' | null>(null);
@@ -181,6 +182,7 @@ export function Finance({
           [
             ['entries', 'Lançamentos'],
             ['plan', 'Planejamento'],
+            ['compare', 'Comparativo'],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -284,7 +286,20 @@ export function Finance({
           </>
         )}
       </div>
-      {tab === 'plan' && <FinancePlan month={month} offline={offline} reload={reload + revision} />}
+      {tab === 'plan' && (
+        <FinancePlan
+          month={month}
+          offline={offline}
+          reload={reload + revision}
+          onChanged={() => {
+            void refresh();
+            setReload((n) => n + 1);
+          }}
+        />
+      )}
+      {tab === 'compare' && (
+        <FinanceCompare month={month} offline={offline} reload={reload + revision} />
+      )}
       {error && (
         <p className="form-error" role="alert">
           {error}

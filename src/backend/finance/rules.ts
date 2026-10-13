@@ -1,9 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { Ambiguity, DomainError, type Command, type State } from '../domain/types';
 import { localDate, normalize } from '../domain/format';
-import { MAX_CENTS, type FinanceCategory, type FinanceEntry } from './types';
+import { MAX_CENTS, type FinanceCategory, type FinanceEntry, type FinancePlanItem } from './types';
+import { planSummary } from './plan';
+import {
+  entriesInPeriod,
+  entryTotals,
+  financePage,
+  groupedTotals,
+  monthRange,
+  pageHint,
+  reportPeriod,
+} from './queries';
 export const money = (cents: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cents / 100);
+const amountText = (cents: number) =>
+  `${Math.floor(cents / 100)},${String(cents % 100).padStart(2, '0')}`;
 export function parseMoney(value: string): number {
   const text = value.trim().replace(/^R\$\s*/, '');
   if (!/^(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d{1,2})?$/.test(text))
@@ -14,7 +26,86 @@ export function parseMoney(value: string): number {
     throw new DomainError('O valor deve estar entre R$ 0,01 e R$ 999.999.999,99.');
   return cents;
 }
+
+// Painel e conversa usam as mesmas regras. A função prepara um item sem gravar: no chat,
+// todos os itens só são persistidos depois que o pedido inteiro foi validado.
+const MAX_PLAN_ITEMS = 300;
+export function prepareFinancePlanItem(
+  value: {
+    id?: string;
+    kind: FinancePlanItem['kind'];
+    name?: string;
+    amount: string;
+    categoryId?: string | null;
+    expectedVersion?: number;
+  },
+  all: FinancePlanItem[],
+  categories: FinanceCategory[],
+  at: string,
+): FinancePlanItem {
+  const amountCents = parseMoney(value.amount);
+  const current = value.id ? all.find((x) => x.id === value.id) : undefined;
+  if (value.id && !current) throw new DomainError('Item do planejamento não encontrado.', 404);
+  if (current && value.expectedVersion !== undefined && value.expectedVersion !== current.version)
+    throw new DomainError('Este item foi alterado. Atualize antes de salvar.', 409);
+  if (current && current.kind !== value.kind)
+    throw new DomainError('Não é possível mudar o tipo de um item do planejamento.');
+  if (!current && all.length >= MAX_PLAN_ITEMS)
+    throw new DomainError(`O planejamento aceita até ${MAX_PLAN_ITEMS} itens.`);
+  const others = all.filter((x) => x.id !== current?.id && x.kind === value.kind);
+  let name = value.name?.trim() ?? '';
+  let categoryId: string | null = null;
+  if (value.kind === 'income') {
+    if (!name) throw new DomainError('Informe o nome da renda, como Salário.');
+  } else {
+    if (value.kind === 'fixed' && !name)
+      throw new DomainError('Informe o nome do gasto fixo, como Aluguel.');
+    if (value.categoryId) {
+      const category = categories.find((c) => c.id === value.categoryId);
+      if (!category || category.kind === 'income')
+        throw new DomainError('Escolha uma categoria de despesa.');
+      // Categoria arquivada continua valendo para quem já a usava, mas não para um item novo.
+      if (category.archivedAt && category.id !== current?.categoryId)
+        throw new DomainError('Escolha uma categoria ativa.');
+      categoryId = category.id;
+    } else if (value.kind === 'budget') throw new DomainError('Escolha a categoria do limite.');
+  }
+  if (value.kind === 'budget') {
+    name = '';
+    if (others.some((x) => x.categoryId === categoryId))
+      throw new DomainError('Essa categoria já tem um limite. Edite o existente.');
+  } else if (others.some((x) => normalize(x.name) === normalize(name)))
+    throw new DomainError('Já existe um item com esse nome.');
+  return current
+    ? { ...current, name, amountCents, categoryId, version: current.version + 1, updatedAt: at }
+    : {
+        id: randomUUID(),
+        kind: value.kind,
+        name,
+        amountCents,
+        categoryId,
+        version: 1,
+        createdAt: at,
+        updatedAt: at,
+      };
+}
+
+const planKindLabel = {
+  income: 'Renda prevista',
+  fixed: 'Gasto fixo',
+  budget: 'Limite por categoria',
+};
 export const isFinance = (c: Command) => c.op.startsWith('finance_');
+export const isFinanceDeletion = (c: Command) =>
+  ['finance_delete', 'finance_plan_delete', 'finance_delete_template'].includes(c.op);
+export const isFinanceQuery = (c: Command) =>
+  [
+    'finance_list',
+    'finance_summary',
+    'finance_plan_list',
+    'finance_list_templates',
+    'finance_list_categories',
+  ].includes(c.op);
 // O resumo da semana não é operação financeira (não passa por financeCommand), mas soma
 // lançamentos: o serviço precisa carregá-los e a resposta, como a das finanças, não é reescrita.
 export const needsFinance = (c: Command) => isFinance(c) || c.op === 'week_summary';
@@ -43,7 +134,7 @@ export function financeCommand(
     if (c.expectedVersion !== undefined && c.expectedVersion !== version)
       throw new DomainError('Este registro foi alterado. Atualize antes de salvar.', 409);
   };
-  const category = (ref: string | undefined, kind?: string): FinanceCategory => {
+  const category = (ref: string | null | undefined, kind?: string): FinanceCategory => {
     const matches = f.categories.filter(
       (x) => x.id === ref || normalize(x.name) === normalize(ref ?? 'sem categoria'),
     );
@@ -59,6 +150,74 @@ export function financeCommand(
     if (kind && item.kind !== 'both' && item.kind !== kind)
       throw new DomainError('Categoria incompatível com o tipo do lançamento.');
     return item;
+  };
+  const planName = (item: FinancePlanItem) => item.name || category(item.categoryId).name;
+  const select = <T extends { id: string; version: number }>(
+    items: T[],
+    ref: string | undefined,
+    field: 'entry' | 'template' | 'planItem',
+    question: string,
+    name: (item: T) => string,
+    label: (item: T) => string,
+  ): T => {
+    const matches = items.filter(
+      (x) => x.id === ref || (ref && normalize(name(x)) === normalize(ref)),
+    );
+    if (matches.length !== 1)
+      throw new Ambiguity(
+        question,
+        field,
+        (matches.length ? matches : items)
+          .slice(0, 20)
+          .map((x) => ({ ref: x.id, label: label(x) })),
+      );
+    checkVersion(matches[0].version);
+    return matches[0];
+  };
+  const confirmDeletion = () => {
+    if (c.confirmed) return;
+    const waiting = batch.filter((x) => isFinanceDeletion(x) && !x.confirmed);
+    // Vincula a confirmação ao ID e à versão vistos, inclusive em exclusões de vários itens.
+    const labels = waiting.map((command) => {
+      const field =
+        command.op === 'finance_delete'
+          ? 'entry'
+          : command.op === 'finance_plan_delete'
+            ? 'planItem'
+            : 'template';
+      const candidates =
+        field === 'entry'
+          ? f.entries.map((x) => ({ ...x, label: x.description, name: x.description }))
+          : field === 'template'
+            ? f.templates.map((x) => ({ ...x, label: `modelo ${x.name}` }))
+            : (f.plan ?? [])
+                .filter((x) => !command.planKind || x.kind === command.planKind)
+                .map((x) => ({
+                  ...x,
+                  name: planName(x),
+                  label: `${planKindLabel[x.kind]} ${planName(x)}`,
+                }));
+      const matches = candidates.filter(
+        (x) =>
+          x.id === command[field] ||
+          (command[field] && normalize(x.name) === normalize(command[field]!)),
+      );
+      if (matches.length !== 1) return command[field] ?? 'item';
+      const item = matches[0];
+      command[field] = item.id;
+      command.expectedVersion ??= item.version;
+      return `${item.label}, ${money(item.amountCents)}`;
+    });
+    throw new Ambiguity(
+      waiting.length > 1
+        ? `Excluir estes ${waiting.length} ${waiting.every((x) => x.op === 'finance_delete') ? 'lançamentos' : 'itens'}?\n${labels.map((label) => `- ${label}`).join('\n')}`
+        : `Excluir ${labels[0]}?`,
+      'confirmed',
+      [
+        { ref: 'true', label: 'Sim, excluir', keywords: ['sim', 'excluir'] },
+        { ref: 'false', label: 'Cancelar', keywords: ['nao', 'cancelar'] },
+      ],
+    );
   };
   const entry = (): FinanceEntry => {
     const matches = f.entries.filter(
@@ -77,29 +236,186 @@ export function financeCommand(
     return matches[0];
   };
   let reply = '';
+  if (c.op === 'finance_plan_list') {
+    const plan = f.plan ?? [];
+    const month = c.month ?? localDate(now).slice(0, 7);
+    const { fromDate, toDate } = monthRange(month);
+    const entries = entriesInPeriod(f.entries, fromDate, toDate);
+    const totals = entryTotals(entries);
+    const summary = planSummary(plan, {
+      ...totals,
+      byCategory: groupedTotals(entries, 'categoryId'),
+    });
+    const selected = plan
+      .filter((x) => !c.planKind || x.kind === c.planKind)
+      .sort(
+        (a, b) =>
+          a.kind.localeCompare(b.kind) ||
+          planName(a).localeCompare(planName(b)) ||
+          a.id.localeCompare(b.id),
+      );
+    const rows = financePage(selected, c.page).map((x) => {
+      const budget = summary.budgetRows.find((row) => row.categoryId === x.categoryId);
+      const progress =
+        x.kind === 'budget' && budget
+          ? ` — realizado ${money(budget.spent)} (${budget.percent}%; ${budget.state === 'over' ? 'acima do limite' : budget.state === 'warning' ? 'perto do limite' : 'dentro do limite'})`
+          : '';
+      return `${planKindLabel[x.kind]} — ${planName(x)} — ${money(x.amountCents)}/mês${progress}`;
+    });
+    return {
+      changed: false,
+      reply: `Planejamento mensal: renda prevista ${money(summary.income)}; gastos fixos ${money(summary.fixed)}; livre para gastar ${money(summary.free)}.\nRealizado em ${month}: receitas ${money(totals.income)}; despesas ${money(totals.expense)}. Despesa planejada ${money(summary.plannedExpense)}.\n${selected.length} item(ns). ${pageHint(selected.length, c.page)}\n${rows.join('\n') || 'Nenhum item nesta página.'}`,
+    };
+  }
+  if (c.op === 'finance_plan_update' || c.op === 'finance_plan_delete') {
+    const item = select(
+      (f.plan ?? []).filter((x) => !c.planKind || x.kind === c.planKind),
+      c.planItem,
+      'planItem',
+      'Qual item do planejamento deseja alterar?',
+      planName,
+      (x) => `${planKindLabel[x.kind]} — ${planName(x)} — ${money(x.amountCents)}/mês`,
+    );
+    if (c.op === 'finance_plan_delete') {
+      if (channel !== 'panel') confirmDeletion();
+      f.plan = f.plan!.filter((x) => x.id !== item.id);
+      reply = `${planKindLabel[item.kind]} ${planName(item)} excluído do planejamento.`;
+    } else {
+      const updated = prepareFinancePlanItem(
+        {
+          id: item.id,
+          kind: item.kind,
+          name: c.name ?? item.name,
+          amount: c.amount ?? amountText(item.amountCents),
+          categoryId:
+            c.category === undefined
+              ? item.categoryId
+              : c.category === null
+                ? null
+                : category(c.category, 'expense').id,
+          expectedVersion: c.expectedVersion,
+        },
+        f.plan!,
+        f.categories,
+        at,
+      );
+      f.plan = f.plan!.map((x) => (x.id === item.id ? updated : x));
+      reply = `Planejamento atualizado: ${planKindLabel[updated.kind]} — ${planName(updated)} — ${money(updated.amountCents)}/mês.`;
+    }
+    state.history.push({ id: randomUUID(), taskId: 0, action: reply, source: channel, at });
+    return { changed: true, reply };
+  }
+  if (c.op === 'finance_plan_create') {
+    if (!c.planKind)
+      throw new Ambiguity(
+        'Qual tipo de item deseja adicionar ao planejamento?',
+        'planKind',
+        Object.entries(planKindLabel).map(([ref, label]) => ({ ref, label })),
+      );
+    if (c.planKind !== 'budget' && !c.name)
+      throw new Ambiguity('Qual é o nome deste item do planejamento?', 'name', []);
+    if (c.amount === undefined)
+      throw new Ambiguity('Qual é o valor mensal deste item do planejamento?', 'amount', []);
+    if (c.planKind === 'budget' && !c.category)
+      throw new Ambiguity(
+        'Qual categoria de despesa terá esse limite mensal?',
+        'category',
+        f.categories
+          .filter((x) => !x.archivedAt && x.kind !== 'income')
+          .map((x) => ({ ref: x.id, label: x.name })),
+      );
+    const item = prepareFinancePlanItem(
+      {
+        kind: c.planKind,
+        name: c.name,
+        amount: c.amount,
+        categoryId:
+          c.planKind !== 'income' && c.category ? category(c.category, 'expense').id : null,
+      },
+      f.plan ?? [],
+      f.categories,
+      at,
+    );
+    (f.plan ??= []).push(item);
+    reply = `${planKindLabel[item.kind]} ${item.kind === 'income' ? 'adicionada' : 'adicionado'} ao planejamento: ${item.name || category(item.categoryId!).name} — ${money(item.amountCents)}/mês.`;
+    state.history.push({ id: randomUUID(), taskId: 0, action: reply, source: channel, at });
+    return { changed: true, reply };
+  }
+  if (c.op === 'finance_summary') {
+    const period = reportPeriod(c, now);
+    const cat = c.category ? category(c.category).id : undefined;
+    const eligible = f.entries.filter(
+      (x) => (!c.kind || x.kind === c.kind) && (!cat || x.categoryId === cat),
+    );
+    const entries = entriesInPeriod(eligible, period.fromDate, period.toDate);
+    const totals = entryTotals(entries);
+    const previous = entryTotals(
+      entriesInPeriod(eligible, period.previous.fromDate, period.previous.toDate),
+    );
+    const groups = groupedTotals(entries, c.breakdown === 'day' ? 'date' : 'categoryId');
+    const rows = financePage(groups, c.page).map(
+      (x) =>
+        `${c.breakdown === 'day' ? x.id : category(x.id).name} — receitas ${money(x.income)}; despesas ${money(x.expense)}`,
+    );
+    const variation = previous.expense
+      ? ` Variação das despesas: ${((totals.expense / previous.expense - 1) * 100).toFixed(1).replace('.', ',')}%.`
+      : ' Sem base de despesas para comparação percentual.';
+    return {
+      changed: false,
+      reply: `Resumo financeiro de ${period.fromDate} a ${period.toDate}: receitas ${money(totals.income)}; despesas ${money(totals.expense)}; resultado ${money(totals.result)}.\nMês anterior (${period.previous.fromDate.slice(0, 7)}): receitas ${money(previous.income)}; despesas ${money(previous.expense)}; resultado ${money(previous.result)}.${variation}\nPor ${c.breakdown === 'day' ? 'dia' : 'categoria'}. ${pageHint(groups.length, c.page)}\n${rows.join('\n') || 'Nenhum lançamento nesta página.'}`,
+    };
+  }
+  if (c.op === 'finance_list_categories') {
+    const selected = f.categories
+      .filter(
+        (x) =>
+          (c.archived === undefined || Boolean(x.archivedAt) === c.archived) &&
+          (!c.categoryKind || x.kind === c.categoryKind || x.kind === 'both'),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    return {
+      changed: false,
+      reply: `${selected.length} categoria(s). ${pageHint(selected.length, c.page)}\n${
+        financePage(selected, c.page)
+          .map((x) => `${x.name} — ${kindLabel(x.kind)}${x.archivedAt ? ' — arquivada' : ''}`)
+          .join('\n') || 'Nenhuma categoria nesta página.'
+      }`,
+    };
+  }
+  if (c.op === 'finance_list_templates') {
+    const selected = f.templates
+      .filter((x) => !c.kind || x.kind === c.kind)
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    return {
+      changed: false,
+      reply: `${selected.length} modelo(s) de lançamento. ${pageHint(selected.length, c.page)}\n${
+        financePage(selected, c.page)
+          .map(
+            (x) =>
+              `${x.name} — ${kindLabel(x.kind)} — ${money(x.amountCents)} — ${category(x.categoryId).name}`,
+          )
+          .join('\n') || 'Nenhum modelo nesta página.'
+      }`,
+    };
+  }
   if (c.op === 'finance_list') {
     if (c.fromDate && c.toDate && c.fromDate > c.toDate) throw new DomainError('Período inválido.');
     const cat = c.category ? category(c.category).id : undefined;
     const entries = f.entries.filter(
       (x) =>
-        !x.deletedAt &&
+        Boolean(x.deletedAt) === (c.deleted ?? false) &&
         (!c.kind || x.kind === c.kind) &&
         (!cat || x.categoryId === cat) &&
         (!c.fromDate || x.date >= c.fromDate) &&
         (!c.toDate || x.date <= c.toDate) &&
         (!c.search || normalize(x.description).includes(normalize(c.search))),
     );
-    const income = entries
-      .filter((x) => x.kind === 'income')
-      .reduce((s, x) => s + x.amountCents, 0);
-    const expense = entries
-      .filter((x) => x.kind === 'expense')
-      .reduce((s, x) => s + x.amountCents, 0);
+    const { income, expense } = entryTotals(entries);
     const page = c.page ?? 1;
     return {
       changed: false,
-      reply: `Receitas: ${money(income)}. Despesas: ${money(expense)}. Resultado do período: ${money(income - expense)}.\n${entries.length} lançamento(s). Página ${page}.\n${entries
-        .sort((a, b) => b.date.localeCompare(a.date))
+      reply: `${c.deleted ? 'Lançamentos excluídos — os valores abaixo não entram no saldo realizado.\n' : ''}Receitas: ${money(income)}. Despesas: ${money(expense)}. Resultado do período: ${money(income - expense)}.\n${entries.length} lançamento(s). ${pageHint(entries.length, page)}\n${entries
+        .sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id))
         .slice((page - 1) * 10, page * 10)
         .map(
           (x) =>
@@ -108,26 +424,44 @@ export function financeCommand(
         .join('\n')}`,
     };
   }
-  // Modelos de lançamento: só pelo painel. A conversa registra lançamentos direto, então não
-  // ganha nada em criar atalhos, e o schema fica menor para o modelo errar menos.
+  // Usar um modelo copia seus dados atuais para um lançamento; editar o modelo nunca altera
+  // o que já foi lançado, nem cria lançamentos automaticamente.
   if (c.op.endsWith('_template')) {
-    const template = () => {
-      const matches = f.templates.filter(
-        (x) => x.id === c.template || (c.template && normalize(x.name) === normalize(c.template)),
+    const template = () =>
+      select(
+        f.templates,
+        c.template,
+        'template',
+        'Qual modelo de lançamento deseja usar ou alterar?',
+        (x) => x.name,
+        (x) => `${x.name} — ${money(x.amountCents)}`,
       );
-      if (matches.length !== 1) throw new DomainError('Modelo não encontrado.');
-      if (c.expectedVersion !== undefined && c.expectedVersion !== matches[0].version)
-        throw new DomainError('Este modelo foi alterado. Atualize antes de salvar.', 409);
-      return matches[0];
-    };
+    if (c.op === 'finance_use_template') {
+      const item = template();
+      return financeCommand(
+        state,
+        {
+          op: 'finance_create',
+          kind: c.kind ?? item.kind,
+          amount: c.amount ?? amountText(item.amountCents),
+          description: c.description ?? item.description,
+          category: c.category === undefined ? item.categoryId : c.category,
+          date: c.date,
+        },
+        channel,
+        now,
+        batch,
+      );
+    }
     if (c.op === 'finance_create_template') {
-      if (!c.name?.trim()) throw new DomainError('Informe o nome do modelo.');
+      if (!c.name?.trim())
+        throw new Ambiguity('Qual é o nome do modelo de lançamento?', 'name', []);
       if (f.templates.some((x) => normalize(x.name) === normalize(c.name!)))
         throw new DomainError('Já existe um modelo com esse nome.');
       const kind = required(c.kind, 'kind');
       const cat = category(c.category, kind);
       if (cat.archivedAt) throw new DomainError('Escolha uma categoria ativa.');
-      const description = required(c.description, 'description').trim();
+      const description = (c.description ?? c.name).trim();
       if (!description) throw new DomainError('Informe a descrição.');
       f.templates.push({
         id: randomUUID(),
@@ -143,6 +477,7 @@ export function financeCommand(
       reply = `Modelo ${c.name.trim()} salvo.`;
     } else if (c.op === 'finance_delete_template') {
       const item = template();
+      if (channel !== 'panel') confirmDeletion();
       f.templates = f.templates.filter((x) => x.id !== item.id);
       reply = `Modelo ${item.name} excluído.`;
     } else {
@@ -207,9 +542,13 @@ export function financeCommand(
       if (
         c.categoryKind &&
         c.categoryKind !== 'both' &&
-        f.entries.some((x) => x.categoryId === item.id && x.kind !== c.categoryKind)
+        (f.entries.some((x) => x.categoryId === item.id && x.kind !== c.categoryKind) ||
+          f.templates.some((x) => x.categoryId === item.id && x.kind !== c.categoryKind) ||
+          (c.categoryKind === 'income' && (f.plan ?? []).some((x) => x.categoryId === item.id)))
       )
-        throw new DomainError('Há lançamentos incompatíveis com esse tipo.');
+        throw new DomainError(
+          'Há lançamentos, modelos ou itens do planejamento incompatíveis com esse tipo.',
+        );
       if (c.name) item.name = c.name;
       if (c.categoryKind) item.kind = c.categoryKind;
     } else item.archivedAt = c.op === 'finance_archive_category' ? at : null;
@@ -247,29 +586,7 @@ export function financeCommand(
     if (c.op === 'finance_restore' && !item.deletedAt)
       return { changed: false, reply: `${item.description} já está ativo.` };
     if (c.op === 'finance_delete') {
-      // Um pedido como "apague os lançamentos do mercado" traz várias exclusões. A confirmação
-      // é uma só para o pedido inteiro: perguntar item por item obrigava a responder "sim" a
-      // cada lançamento, e o "sim" dado vale para todos (ver applyChoice).
-      const waiting = batch.filter((x) => x.op === 'finance_delete' && !x.confirmed);
-      const label = (ref: string | undefined) => {
-        const found = f.entries.filter(
-          (x) => x.id === ref || (ref && normalize(x.description) === normalize(ref)),
-        );
-        return found.length === 1
-          ? `${found[0].description}, ${money(found[0].amountCents)}`
-          : (ref ?? 'lançamento');
-      };
-      if (!c.confirmed)
-        throw new Ambiguity(
-          waiting.length > 1
-            ? `Excluir estes ${waiting.length} lançamentos?\n${waiting.map((x) => `- ${label(x.entry)}`).join('\n')}`
-            : `Excluir ${item.description}, ${money(item.amountCents)}?`,
-          'confirmed',
-          [
-            { ref: 'true', label: 'Sim, excluir', keywords: ['sim', 'excluir'] },
-            { ref: 'false', label: 'Cancelar', keywords: ['nao', 'cancelar'] },
-          ],
-        );
+      confirmDeletion();
       item.deletedAt = at;
     } else if (c.op === 'finance_restore') item.deletedAt = null;
     else {

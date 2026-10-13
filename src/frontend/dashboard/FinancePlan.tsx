@@ -1,8 +1,9 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FinanceCategory, FinancePlanData, FinancePlanItem } from '@/backend/finance/types';
-import { planSummary, type BudgetRow } from '@/backend/finance/plan';
+import { fixedUsage, planSummary, type BudgetRow, type FixedUsage } from '@/backend/finance/plan';
 import { api } from './api';
+import { today } from './format';
 
 type Kind = FinancePlanItem['kind'];
 const money = (v: number) =>
@@ -24,10 +25,12 @@ export function FinancePlan({
   month,
   offline,
   reload,
+  onChanged,
 }: {
   month: string;
   offline: boolean;
   reload: number;
+  onChanged?: () => void;
 }) {
   const [data, setData] = useState<FinancePlanData | null>(null);
   const [error, setError] = useState(''),
@@ -77,6 +80,44 @@ export function FinancePlan({
       setBusy(false);
     }
   }
+  // Registra um gasto já na categoria do limite; a data é sempre hoje, por isso o formulário
+  // só aparece no mês corrente.
+  async function spend(categoryName: string, amount: string, description: string) {
+    if (running.current) return false;
+    if (offline || !navigator.onLine) {
+      setError('Conecte-se para registrar o gasto.');
+      return false;
+    }
+    running.current = true;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await api<{ reply: string; clarification: boolean }>('actions', {
+        commands: [
+          {
+            op: 'finance_create',
+            kind: 'expense',
+            description: description.trim() || categoryName,
+            amount,
+            category: categoryName,
+          },
+        ],
+        requestId: crypto.randomUUID(),
+      });
+      if (result.clarification) throw new Error(result.reply);
+      setNotice(result.reply);
+      await load();
+      onChanged?.();
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  }
   if (!data) return error ? <p className="form-error">{error}</p> : null;
   const summary = planSummary(data.items, data.real);
   const categoryName = (id: string | null) =>
@@ -110,6 +151,7 @@ export function FinancePlan({
   );
   const list = (kind: 'income' | 'fixed', title: string, empty: string) => {
     const rows = data.items.filter((x) => x.kind === kind);
+    const usage = new Map(fixedUsage(data.items, data.expenseEntries).map((u) => [u.item.id, u]));
     return (
       <section className="finance-panel" aria-label={title}>
         <div className="list-toolbar">
@@ -124,29 +166,48 @@ export function FinancePlan({
           editing?.item?.id === item.id ? (
             <div key={item.id}>{form(kind, item)}</div>
           ) : (
-            <div className="plan-row" key={item.id}>
-              <span>
-                {item.name}
-                {item.categoryId && <small> · {categoryName(item.categoryId)}</small>}
-              </span>
-              <strong>{money(item.amountCents)}</strong>
-              <div className="finance-row-actions">
-                <button
-                  className="text-button"
-                  disabled={busy}
-                  onClick={() => setEditing({ kind, item })}
-                >
-                  Editar {item.name}
-                </button>
-                <button
-                  className="text-button danger"
-                  disabled={busy}
-                  aria-label={`Excluir ${item.name}`}
-                  onClick={() => remove(item, item.name)}
-                >
-                  Excluir
-                </button>
+            <div
+              className={`plan-fixed${usage.get(item.id) ? ` plan-${usage.get(item.id)!.state}` : ''}`}
+              key={item.id}
+            >
+              <div className="plan-row">
+                <span>
+                  {item.name}
+                  {item.categoryId && <small> · {categoryName(item.categoryId)}</small>}
+                </span>
+                <strong>{money(item.amountCents)}</strong>
+                <div className="finance-row-actions">
+                  <button
+                    className="text-button"
+                    disabled={busy}
+                    onClick={() => setEditing({ kind, item })}
+                  >
+                    Editar {item.name}
+                  </button>
+                  <button
+                    className="text-button danger"
+                    disabled={busy}
+                    aria-label={`Excluir ${item.name}`}
+                    onClick={() => remove(item, item.name)}
+                  >
+                    Excluir
+                  </button>
+                </div>
               </div>
+              {kind === 'fixed' && usage.get(item.id) && (
+                <FixedBar
+                  usage={usage.get(item.id)!}
+                  canSpend={data.month === today().slice(0, 7)}
+                  busy={busy}
+                  spend={(amount, description) =>
+                    spend(
+                      item.categoryId ? categoryName(item.categoryId) : 'Sem categoria',
+                      amount,
+                      description ? `${item.name} - ${description}` : item.name,
+                    )
+                  }
+                />
+              )}
             </div>
           ),
         )}
@@ -275,6 +336,13 @@ export function FinancePlan({
               >
                 <span style={{ width: `${Math.min(100, row.percent)}%` }} />
               </div>
+              <BudgetUsage
+                entries={data.expenseEntries.filter((e) => e.categoryId === row.categoryId)}
+                limit={row.limit}
+                canSpend={data.month === today().slice(0, 7)}
+                busy={busy}
+                spend={(amount, description) => spend(name, amount, description)}
+              />
               <div className="plan-budget-line">
                 <small className="plan-state">{stateLabel(row)}</small>
                 <div className="finance-row-actions">
@@ -395,5 +463,130 @@ function PlanForm({
         </div>
       </fieldset>
     </form>
+  );
+}
+
+const dayLabel = (date: string) => date.split('-').reverse().slice(0, 2).join('/');
+
+// Mostra o limite sendo consumido: cada gasto da categoria com o acumulado até ali, e um
+// registro rápido para somar o próximo (“hoje 10, amanhã 50…”).
+function BudgetUsage({
+  entries,
+  limit,
+  canSpend,
+  busy,
+  spend,
+}: {
+  entries: FinancePlanData['expenseEntries'];
+  limit: number;
+  canSpend: boolean;
+  busy: boolean;
+  spend: (amount: string, description: string) => Promise<boolean>;
+}) {
+  const [amount, setAmount] = useState(''),
+    [description, setDescription] = useState('');
+  let total = 0;
+  const rows = entries.map((e) => ({ ...e, total: (total += e.amountCents) }));
+  return (
+    <div className="plan-usage">
+      {rows.length > 0 && (
+        <details>
+          <summary>
+            {rows.length} {rows.length === 1 ? 'gasto' : 'gastos'} nesta categoria
+          </summary>
+          <ul>
+            {rows.map((e) => (
+              <li key={e.id}>
+                <span>
+                  {dayLabel(e.date)} · {e.description}
+                </span>
+                <span>
+                  {money(e.amountCents)}{' '}
+                  <small>
+                    → {money(e.total)} de {money(limit)}
+                  </small>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {canSpend && (
+        <form
+          className="plan-spend"
+          aria-label="Registrar gasto nesta categoria"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void spend(amount, description).then((ok) => {
+              if (ok) {
+                setAmount('');
+                setDescription('');
+              }
+            });
+          }}
+        >
+          <input
+            required
+            inputMode="decimal"
+            placeholder="Valor gasto hoje"
+            aria-label="Valor gasto hoje"
+            maxLength={40}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+          <input
+            placeholder="Descrição (opcional)"
+            aria-label="Descrição do gasto"
+            maxLength={200}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <button className="button secondary" disabled={busy}>
+            Somar gasto
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function FixedBar({
+  usage,
+  canSpend,
+  busy,
+  spend,
+}: {
+  usage: FixedUsage;
+  canSpend: boolean;
+  busy: boolean;
+  spend: (amount: string, description: string) => Promise<boolean>;
+}) {
+  const { item, spent, percent, state } = usage;
+  const left = item.amountCents - spent;
+  return (
+    <div className="plan-fixed-usage">
+      <div
+        className="plan-bar"
+        role="progressbar"
+        aria-label={`Pago de ${item.name}`}
+        aria-valuemin={0}
+        aria-valuemax={item.amountCents}
+        aria-valuenow={Math.min(spent, item.amountCents)}
+        aria-valuetext={`${percent}% do valor`}
+      >
+        <span style={{ width: `${Math.min(100, percent)}%` }} />
+      </div>
+      <small className="plan-state">
+        {money(spent)} de {money(item.amountCents)} · {percent}% ·{' '}
+        {state === 'over' ? `acima em ${money(-left)}` : `restam ${money(left)}`}
+      </small>
+      <BudgetUsage
+        entries={usage.entries}
+        limit={item.amountCents}
+        canSpend={canSpend}
+        busy={busy}
+        spend={spend}
+      />
+    </div>
   );
 }

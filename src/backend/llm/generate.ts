@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { type Database } from '../db';
-import { commandsSchema, DomainError, localDate, type Command } from '../domain';
+import { commandsSchema, DomainError, localDate, MAX_AI_COMMANDS, type Command } from '../domain';
 import { decryptKey, encryptionKey } from './crypto';
 import { GEMINI_URL, type ProviderRow } from './providers';
 import {
@@ -343,6 +343,17 @@ function parseCommands(output: string): ParseResult<Command[]> {
   const commands = (data as { commands?: unknown })?.commands;
   if (!Array.isArray(commands))
     return { ok: false, failure: 'A IA respondeu em JSON, mas sem a lista de ações esperada.' };
+  if (commands.length === 0)
+    return {
+      ok: false,
+      failure:
+        'A IA devolveu uma lista vazia (0 ações). Reenvie o pedido indicando o que deseja fazer.',
+    };
+  if (commands.length > MAX_AI_COMMANDS)
+    return {
+      ok: false,
+      failure: `A IA devolveu ${commands.length} ações; o limite é ${MAX_AI_COMMANDS} por mensagem. Divida o pedido em partes menores.`,
+    };
   const checked = commandsSchema.safeParse(commands);
   if (!checked.success)
     return {
