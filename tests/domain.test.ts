@@ -10,7 +10,7 @@ import {
   type State,
   type Command,
 } from '../src/backend/domain';
-import { basicInterpret } from '../src/backend/interpreter';
+import { basicInterpret, keepNewTasksNew } from '../src/backend/interpreter';
 
 const start = new Date('2026-09-16T15:00:00Z');
 function run(state: State, commands: Command[], channel = 'test', now = start) {
@@ -263,4 +263,92 @@ test('pedido com dois comandos encadeados por "e" não é resolvido por um padr�
     null,
   );
   assert.equal(basicInterpret('exclua #1 e restaure #2'), null);
+});
+test('pelo chat, tarefa concluída só é editada depois de reaberta', () => {
+  const done = run(task(), [{ op: 'complete_task', task: '#1' }]);
+  assert.throws(
+    () => run(done, [{ op: 'update_task', task: '#1', title: 'Outra coisa' }], 'web'),
+    /concluída e não foi alterada/,
+  );
+  // O painel edita a concluída de propósito, e reabrir na mesma edição também vale pelo chat.
+  const panel = run(done, [{ op: 'update_task', task: '#1', dueDate: '2026-09-30' }], 'panel');
+  assert.equal(panel.tasks[0].status, 'completed');
+  assert.equal(panel.tasks[0].dueDate, '2026-09-30');
+  const reopened = run(done, [{ op: 'update_task', task: '#1', status: 'pending' }], 'web');
+  assert.equal(reopened.tasks[0].status, 'pending');
+});
+test('pedido de adicionar vira tarefa nova, nunca outra tarefa renomeada', () => {
+  const state = run(emptyState(), [
+    { op: 'create_task', title: 'Lembrar Warley sobre o decola' },
+    { op: 'complete_task', task: '#1' },
+    { op: 'create_task', title: 'Organizar as ideias e passar pra Ivan' },
+    { op: 'create_group', name: 'Estágio' },
+    { op: 'create_group', name: 'IC' },
+    { op: 'create_group', name: 'Pessoal' },
+  ]);
+  // Casos reais: a IA respondeu a estes pedidos renomeando uma tarefa existente. A #1 estava
+  // concluída, e a tarefa “nova” apareceu direto em Concluídas.
+  const pedidos: [string, Command[], Command[]][] = [
+    [
+      'adicione em estagio cobrar warley sobre acesso devops segunda',
+      [
+        {
+          op: 'update_task',
+          task: '#1',
+          title: 'Cobrar Warley sobre acesso devops',
+          group: 'Estágio',
+          dueDate: '2026-09-28',
+        },
+      ],
+      [
+        {
+          op: 'create_task',
+          title: 'Cobrar Warley sobre acesso devops',
+          group: 'Estágio',
+          dueDate: '2026-09-28',
+        },
+      ],
+    ],
+    [
+      'Preencher forms tassio em IC adicione',
+      [{ op: 'update_task', task: '#2', title: 'Preencher forms tassio', group: 'IC' }],
+      [{ op: 'create_task', title: 'Preencher forms tassio', group: 'IC' }],
+    ],
+    [
+      'Crie uma task em pessoal chamada dentista pra a próxima terça',
+      [{ op: 'update_task', title: 'Dentista', group: 'Pessoal', dueDate: '2026-09-22' }],
+      [{ op: 'create_task', title: 'Dentista', group: 'Pessoal', dueDate: '2026-09-22' }],
+    ],
+  ];
+  for (const [texto, daIa, esperado] of pedidos) {
+    const commands = keepNewTasksNew(daIa, texto, state);
+    assert.deepEqual(commands, esperado, texto);
+    const after = run(state, commands, 'web');
+    assert.equal(after.tasks.length, 3);
+    assert.equal(after.tasks[2].status, 'pending');
+    assert.equal(after.tasks[2].trashedAt, null);
+    assert.deepEqual(after.tasks.slice(0, 2), state.tasks.slice(0, 2), texto);
+  }
+  // Edições de verdade continuam edições: tarefa citada pelo código, renomear com verbo de criar
+  // só no título novo e mudar o prazo sem trocar o nome.
+  const edicoes: [string, Command[]][] = [
+    ['adicione a 2 em estagio', [{ op: 'update_task', task: '#2', group: 'Estágio' }]],
+    ['adicione a 2 em estagio', [{ op: 'update_task', task: '#2', title: 'Organizar ideias' }]],
+    [
+      'renomeie organizar as ideias para criar relatório',
+      [{ op: 'update_task', task: '#2', title: 'Criar relatório' }],
+    ],
+    [
+      'adicione prazo amanhã em organizar as ideias',
+      [
+        {
+          op: 'update_task',
+          task: '#2',
+          title: 'Organizar as ideias e passar pra Ivan',
+          dueDate: '2026-09-17',
+        },
+      ],
+    ],
+  ];
+  for (const [texto, daIa] of edicoes) assert.deepEqual(keepNewTasksNew(daIa, texto, state), daIa);
 });

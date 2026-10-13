@@ -1468,12 +1468,22 @@ label {
 }
 .chat-composer {
   display: flex;
+  align-items: flex-end;
   gap: 9px;
   border-top: var(--line-width) solid var(--line-neutral);
   padding: 17px 25px 0;
 }
-.chat-composer input {
+/* Cresce com as quebras de linha (até 6, pelo atributo rows) e rola a partir daí. */
+.chat-composer textarea {
   font-size: 12px;
+  line-height: 1.5;
+  resize: none;
+}
+/* Sem teclado físico não há Ctrl: o envio é pelo botão, e a dica só confundiria. */
+@media (hover: none) {
+  .send-hint {
+    display: none;
+  }
 }
 .chat-composer .button {
   padding: 11px 13px;
@@ -2521,7 +2531,7 @@ label {
   }
   .llm-provider-form input,
   .llm-provider-form select,
-  .chat-composer input {
+  .chat-composer textarea {
     font-size: 16px;
   }
   .llm-provider-actions .text-button {
@@ -4417,4 +4427,109 @@ label {
   .goal-bar span {
     transition: none;
   }
+}
+.plan-usage {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+.plan-usage summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.plan-usage ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.plan-usage li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+  font-variant-numeric: tabular-nums;
+}
+.plan-spend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.plan-spend input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.compare-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 180px;
+  padding: 8px 0;
+}
+.compare-col {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.compare-bars {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+}
+.compare-bars span {
+  flex: 1;
+  max-width: 28px;
+  min-height: 2px;
+  border-radius: 4px 4px 0 0;
+}
+.compare-income {
+  background: var(--success-ink);
+}
+.compare-expense {
+  background: var(--danger-ink);
+}
+.compare-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.compare-legend span {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.compare-view td meter {
+  display: block;
+  width: 100%;
+  min-width: 60px;
+}
+.plan-fixed {
+  border-bottom: var(--line-width) solid var(--line-neutral);
+}
+.plan-fixed .plan-row {
+  border-bottom: 0;
+}
+.plan-fixed-usage {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 12px;
+}
+.plan-fixed.plan-warning .plan-bar span {
+  background: var(--warning-ink);
+}
+.plan-fixed.plan-over .plan-bar {
+  background: var(--danger-soft);
+}
+.plan-fixed.plan-over .plan-bar span {
+  background: var(--danger-ink);
 }

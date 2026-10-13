@@ -1,9 +1,9 @@
-import { financeCommand, isFinance } from '../finance/rules';
+import { financeCommand, isFinance, isFinanceDeletion, isFinanceQuery } from '../finance/rules';
 import { goalCommand, isGoal } from '../goals/rules';
 import { randomUUID } from 'node:crypto';
 import { formatWeekSummary, resolveWeek, weekSummary } from '../summary';
 import { nextDue } from './recurrence';
-import { dueLabel, formatDate, normalize } from './format';
+import { dueLabel, formatDate, normalize, localDate } from './format';
 import { contextFor, findGroup, findTask, selectTasks } from './lookup';
 import {
   Ambiguity,
@@ -47,7 +47,7 @@ function validateSchedule(t: Task) {
 // estas palavras, sem passar por um modelo que poderia suavizá-la.
 export const UNSUPPORTED = 'Não consigo fazer isso ainda.';
 export const HELP =
-  'Você pode criar grupos e tarefas, editar, concluir, restaurar e consultar. Exemplos:\n• Crie um grupo chamado Estudos\n• Adicione ler capítulo 3 em Estudos\n• Anota: comprar pilhas\n• Finalizei #1\n• Restaure #1\n• O que vence hoje?\n• Quais tarefas estão na lixeira?\n• Exclua as tarefas da lixeira depois de 15 dias\n• Desfaça a última alteração\n• Resumo da semana (ou “como foi minha semana?”)\nUse o microfone do chat para ditar, revisar e enviar texto (não recebe arquivos de áudio). Com IA, registre receitas/despesas, categorias e consultas financeiras, por exemplo “Gastei 42,90 no almoço hoje”. O Financeiro também funciona por formulário. Para descrições e campos, use também o painel. Com uma IA cadastrada em Modelos de IA, você escreve do seu jeito, sem seguir esses formatos.';
+  'Você pode criar grupos e tarefas, editar, concluir, restaurar e consultar. Exemplos:\n• Crie um grupo chamado Estudos\n• Adicione ler capítulo 3 em Estudos\n• Anota: comprar pilhas\n• Finalizei #1\n• Restaure #1\n• O que vence hoje?\n• Quais tarefas estão na lixeira?\n• Exclua as tarefas da lixeira depois de 15 dias\n• Desfaça a última alteração\n• Resumo da semana (ou “como foi minha semana?”)\nUse o microfone do chat para ditar, revisar e enviar texto (não recebe arquivos de áudio). Com IA, registre receitas/despesas, categorias e consultas financeiras, por exemplo “Gastei 42,90 no almoço hoje”. No planejamento, adicione despesas fixas (“adicione aluguel 450 nas despesas fixas”), renda prevista e limites mensais, ou consulte “quais são minhas dívidas fixas?”. O Financeiro também funciona por formulário. Para descrições e campos, use também o painel. Com uma IA cadastrada em Modelos de IA, você escreve do seu jeito, sem seguir esses formatos.';
 
 export function execute(
   original: State,
@@ -103,6 +103,14 @@ export function execute(
           ? goalCommand(state, c, channel, now, commands)
           : financeCommand(state, c, channel, now, commands);
         replies.push(result.reply);
+        if (isFinanceQuery(c))
+          ctx.lastQuery = {
+            ...c,
+            page: c.page ?? 1,
+            ...(['finance_plan_list', 'finance_summary'].includes(c.op)
+              ? { month: c.month ?? localDate(now).slice(0, 7) }
+              : {}),
+          };
         if (result.changed) mutation = barrier = true;
         commandIndex++;
         continue;
@@ -327,6 +335,13 @@ export function execute(
         case 'update_task': {
           const t = findTask(state, c, ctx);
           if (t.trashedAt) throw new DomainError('Restaure a tarefa da lixeira antes de editar.');
+          // Pelo chat, “adicione X” chegou a virar edição de uma tarefa concluída de nome
+          // parecido: o pedido saía como feito e a tarefa “nova” ia direto para Concluídas. Como
+          // na lixeira, a concluída só muda depois de reaberta. O painel edita de propósito.
+          if (t.status === 'completed' && c.status === undefined && channel !== 'panel')
+            throw new DomainError(
+              `#${t.id} ${t.title} está concluída e não foi alterada. Para mudá-la, restaure a tarefa antes; para uma tarefa nova, peça para criar.`,
+            );
           if (c.description !== undefined && c.appendDescription !== undefined)
             throw new DomainError('Escolha substituir ou acrescentar a descrição.');
           for (const key of [
@@ -602,13 +617,15 @@ export function pendingAnswer(
       ];
     return [{ op: 'create_group', name: p.createGroup }, ...commands];
   }
-  if (['amount', 'description', 'kind', 'target'].includes(p.field) && !p.options.length) {
+  if (['amount', 'description', 'kind', 'target', 'name'].includes(p.field) && !p.options.length) {
     // O schema recusa acima de 40 caracteres em amount; sem esta checagem a resposta comprida
     // estourava como erro de validação e chegava como “não foi possível processar o pedido”.
     if ((p.field === 'amount' || p.field === 'target') && text.trim().length > 40)
       throw new DomainError('Responda só com o valor, como 42,90.');
     if (p.field === 'description' && text.trim().length > 5000)
       throw new DomainError('A descrição precisa ter até 5.000 caracteres.');
+    if (p.field === 'name' && text.trim().length > 100)
+      throw new DomainError('O nome precisa ter até 100 caracteres.');
     const value =
       p.field === 'kind'
         ? ({ receita: 'income', despesa: 'expense' } as const)[
@@ -663,11 +680,16 @@ function applyChoice(
         { op: 'clarify', question: 'Exclusão cancelada. Envie o próximo pedido ou retome a fila.' },
       ];
     for (const c of commands)
-      if (c.op === 'finance_delete' || c.op === 'goal_delete') c.confirmed = true;
+      if (isFinanceDeletion(c) || c.op === 'goal_delete') c.confirmed = true;
   } else if (pending.field === 'deleteTasks') {
     for (const c of commands)
       if (c.op === 'delete_group' && c.deleteTasks === undefined)
         c.deleteTasks = choice.ref === 'true';
-  } else Object.assign(commands[pending.index], { [pending.field]: choice.ref });
+  } else {
+    const command = commands[pending.index];
+    Object.assign(command, { [pending.field]: choice.ref });
+    if (['entry', 'planItem', 'template'].includes(pending.field) && isFinanceDeletion(command))
+      delete command.confirmed;
+  }
   return commands;
 }

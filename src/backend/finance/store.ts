@@ -181,6 +181,32 @@ export async function financeContext(tx: Sql) {
     description: r.data.description.slice(0, 200),
     categoryId: r.data.categoryId,
     deleted: !!r.data.deletedAt,
+    version: r.data.version,
   }));
-  return { categories, entries };
+  const plan = (
+    await tx.query<{ data: FinancePlanItem }>(
+      "SELECT data FROM agenda_finance_plan ORDER BY data->>'updatedAt' DESC,id DESC LIMIT 50",
+    )
+  ).rows.map(({ data }) => ({
+    id: data.id,
+    kind: data.kind,
+    name: data.name,
+    amountCents: data.amountCents,
+    categoryId: data.categoryId,
+    version: data.version,
+  }));
+  const templates = (
+    await tx.query<{ data: FinanceTemplate }>(
+      "SELECT data FROM agenda_finance_templates ORDER BY data->>'name',id LIMIT 50",
+    )
+  ).rows.map(({ data }) => ({
+    id: data.id,
+    name: data.name,
+    kind: data.kind,
+    amountCents: data.amountCents,
+    description: data.description.slice(0, 200),
+    categoryId: data.categoryId,
+    version: data.version,
+  }));
+  return { categories, entries, plan, templates };
 }

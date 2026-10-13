@@ -1,0 +1,22 @@
+# Varredura de lembretes com o app fechado. O cron da Vercel (plano gratuito) roda uma vez por
+# dia, e lembrete precisa de minutos. O GitHub agenda de 5 em 5 minutos, mas pode atrasar em
+# horários de pico; o servidor aceita lembretes vencidos há até 15 minutos.
+name: Lembretes
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  varrer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Chamar a varredura de lembretes
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            https://agenda-magno.app/api/cron/reminders

@@ -1,11 +1,15 @@
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { db, lock, type Database, type Sql } from '../db';
-import { DomainError, localDate, normalize } from '../domain';
-import { parseMoney } from './rules';
-import type { FinanceCategory, FinancePlanData, FinancePlanItem } from './types';
+import { DomainError, localDate } from '../domain';
+import { prepareFinancePlanItem } from './rules';
+import { planSummary } from './plan';
+import type {
+  FinanceCategory,
+  FinanceCompareData,
+  FinancePlanData,
+  FinancePlanItem,
+} from './types';
 
-const MAX_ITEMS = 300;
 const monthSchema = z
   .object({
     month: z
@@ -67,9 +71,22 @@ export async function financePlan(input: unknown, connection?: Database): Promis
     const expense = byCategory.reduce((s, c) => s + c.expense, 0);
     if (!Number.isSafeInteger(income) || !Number.isSafeInteger(expense))
       throw new DomainError('Total excede o limite de cálculo.');
+    const planItems = await items(tx);
+    const expenseEntries = (
+      await tx.query<FinancePlanData['expenseEntries'][number]>(
+        `SELECT data->>'id' AS id, data->>'categoryId' AS "categoryId", data->>'date' AS date,
+          data->>'description' AS description, (data->>'amountCents')::bigint::float8 AS "amountCents"
+         FROM agenda_finance_entries
+         WHERE data->>'date' >= $1 AND data->>'date' <= $2 AND data->>'deletedAt' IS NULL
+           AND data->>'kind'='expense'
+         ORDER BY data->>'date', data->>'createdAt' LIMIT 2000`,
+        [start, end],
+      )
+    ).rows;
     return {
       month,
-      items: await items(tx),
+      items: planItems,
+      expenseEntries,
       categories: await categories(tx),
       real: {
         income,
@@ -85,59 +102,17 @@ export async function saveFinancePlanItem(
   connection?: Database,
 ): Promise<FinancePlanItem> {
   const value = saveSchema.parse(input);
-  const amountCents = parseMoney(value.amount);
   const database = connection ?? (await db());
   const at = new Date().toISOString();
   return database.transaction(async (tx) => {
     await lock(tx);
-    const all = await items(tx);
-    const current = value.id ? all.find((x) => x.id === value.id) : undefined;
-    if (value.id && !current) throw new DomainError('Item do planejamento não encontrado.', 404);
-    if (current && value.expectedVersion !== undefined && value.expectedVersion !== current.version)
-      throw new DomainError('Este item foi alterado. Atualize antes de salvar.', 409);
-    if (current && current.kind !== value.kind)
-      throw new DomainError('Não é possível mudar o tipo de um item do planejamento.');
-    if (!current && all.length >= MAX_ITEMS)
-      throw new DomainError(`O planejamento aceita até ${MAX_ITEMS} itens.`);
-    const others = all.filter((x) => x.id !== current?.id && x.kind === value.kind);
-    let name = value.name?.trim() ?? '';
-    let categoryId: string | null = null;
-    if (value.kind === 'income') {
-      if (!name) throw new DomainError('Informe o nome da renda, como Salário.');
-    } else {
-      if (value.kind === 'fixed' && !name)
-        throw new DomainError('Informe o nome do gasto fixo, como Aluguel.');
-      if (value.categoryId) {
-        const category = (await categories(tx)).find((c) => c.id === value.categoryId);
-        if (!category || category.kind === 'income')
-          throw new DomainError('Escolha uma categoria de despesa.');
-        // Categoria arquivada continua valendo para quem já a usava; só não entra em item novo.
-        if (category.archivedAt && category.id !== current?.categoryId)
-          throw new DomainError('Escolha uma categoria ativa.');
-        categoryId = category.id;
-      } else if (value.kind === 'budget') throw new DomainError('Escolha a categoria do limite.');
-    }
-    if (value.kind === 'budget') {
-      name = '';
-      if (others.some((x) => x.categoryId === categoryId))
-        throw new DomainError('Essa categoria já tem um limite. Edite o existente.');
-    } else if (others.some((x) => normalize(x.name) === normalize(name)))
-      throw new DomainError('Já existe um item com esse nome.');
-    const item: FinancePlanItem = current
-      ? { ...current, name, amountCents, categoryId, version: current.version + 1, updatedAt: at }
-      : {
-          id: randomUUID(),
-          kind: value.kind,
-          name,
-          amountCents,
-          categoryId,
-          version: 1,
-          createdAt: at,
-          updatedAt: at,
-        };
+    const item = prepareFinancePlanItem(value, await items(tx), await categories(tx), at);
     await tx.query(
       'INSERT INTO agenda_finance_plan(id,data) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
       [item.id, JSON.stringify(item)],
+    );
+    await tx.query(
+      "UPDATE agenda_meta SET data=jsonb_set(data,'{revision}',to_jsonb((data->>'revision')::integer+1)) WHERE id=1",
     );
     return item;
   });
@@ -161,6 +136,66 @@ export async function deleteFinancePlanItem(input: unknown, connection?: Databas
     if (value.expectedVersion !== undefined && value.expectedVersion !== current.version)
       throw new DomainError('Este item foi alterado. Atualize antes de excluir.', 409);
     await tx.query('DELETE FROM agenda_finance_plan WHERE id=$1', [value.id]);
+    await tx.query(
+      "UPDATE agenda_meta SET data=jsonb_set(data,'{revision}',to_jsonb((data->>'revision')::integer+1)) WHERE id=1",
+    );
     return { ok: true };
+  });
+}
+
+// Comparativo dos últimos meses (até o informado): o que entrou, o que saiu e onde, mês a mês.
+export async function financeCompare(
+  input: unknown,
+  connection?: Database,
+): Promise<FinanceCompareData> {
+  const { month, count } = z
+    .object({
+      month: monthSchema.shape.month,
+      count: z.coerce.number().int().min(2).max(12).default(6),
+    })
+    .strict()
+    .parse(input);
+  const year = Number(month.slice(0, 4)),
+    index = Number(month.slice(5, 7)) - 1;
+  const months = Array.from({ length: count }, (_, i) => {
+    const d = new Date(Date.UTC(year, index - (count - 1 - i), 1));
+    return d.toISOString().slice(0, 7);
+  });
+  const database = connection ?? (await db());
+  return database.read(async (tx) => {
+    const rows = (
+      await tx.query<{ month: string; id: string; income: string; expense: string }>(
+        `SELECT substr(data->>'date',1,7) AS month, data->>'categoryId' AS id,
+          COALESCE(SUM((data->>'amountCents')::bigint) FILTER(WHERE data->>'kind'='income'),0) AS income,
+          COALESCE(SUM((data->>'amountCents')::bigint) FILTER(WHERE data->>'kind'='expense'),0) AS expense
+         FROM agenda_finance_entries
+         WHERE data->>'date' >= $1 AND data->>'date' <= $2 AND data->>'deletedAt' IS NULL
+         GROUP BY 1, 2`,
+        [`${months[0]}-01`, `${month}-31`],
+      )
+    ).rows;
+    const planItems = await items(tx);
+    const sum = (kind: FinancePlanItem['kind']) =>
+      planItems.filter((x) => x.kind === kind).reduce((s, x) => s + x.amountCents, 0);
+    const summary = planSummary(planItems);
+    return {
+      months: months.map((m) => {
+        const own = rows.filter((r) => r.month === m);
+        const income = own.reduce((s, r) => s + Number(r.income), 0);
+        const expense = own.reduce((s, r) => s + Number(r.expense), 0);
+        return {
+          month: m,
+          income,
+          expense,
+          result: income - expense,
+          byCategory: own
+            .filter((r) => Number(r.expense) > 0)
+            .map((r) => ({ id: r.id, expense: Number(r.expense) })),
+        };
+      }),
+      categories: (await categories(tx)).map(({ id, name }) => ({ id, name })),
+      plannedExpense: summary.plannedExpense,
+      plannedIncome: sum('income'),
+    };
   });
 }

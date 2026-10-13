@@ -74,6 +74,28 @@ export type FinancePlanData = {
   categories: FinanceCategory[];
   // Só o que foi lançado de verdade no mês, para comparar com o plano.
   real: { income: number; expense: number; byCategory: { id: string; expense: number }[] };
+  // Despesas do mês, da mais antiga à mais nova: mostram como cada limite e cada gasto fixo
+  // foi sendo gasto.
+  expenseEntries: {
+    id: string;
+    categoryId: string;
+    date: string;
+    description: string;
+    amountCents: number;
+  }[];
+};
+export type FinanceCompareData = {
+  months: {
+    month: string;
+    income: number;
+    expense: number;
+    result: number;
+    byCategory: { id: string; expense: number }[];
+  }[];
+  categories: { id: string; name: string }[];
+  // Previsão mensal atual (gastos fixos + limites além dos fixos), a mesma de todos os meses.
+  plannedExpense: number;
+  plannedIncome: number;
 };
 export type FinanceCategory = z.infer<typeof categorySchema>;
 export type FinanceTemplate = z.infer<typeof templateSchema>;

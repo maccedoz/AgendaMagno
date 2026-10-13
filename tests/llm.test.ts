@@ -1114,3 +1114,57 @@ test('resposta a uma pergunta livre da IA volta junto com o pedido original', as
   assert.match(sistema, /crie uma tarefa de dentista/);
   assert.match(sistema, /Para qual dia\?/);
 });
+
+test('“adicione” que a IA transforma em renomear uma tarefa concluída volta a ser criação', async () => {
+  await saveProvider(config(), database);
+  const state = emptyState();
+  state.tasks.push({
+    id: 34,
+    title: 'Lembrar Warley sobre o decola',
+    description: '',
+    groupId: null,
+    status: 'completed',
+    priority: 'normal',
+    dueDate: null,
+    dueTime: null,
+    completedAt: new Date().toISOString(),
+    trashedAt: null,
+    purgeAt: null,
+    trashReason: null,
+    version: 2,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  let sistema = '';
+  const commands = await interpret(
+    state,
+    'adicione cobrar warley sobre acesso devops',
+    'web-adicionar',
+    new Date(),
+    database,
+    {
+      fetch: async (_url, init) => {
+        sistema = JSON.parse(String(init.body)).messages[0].content;
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  commands: [
+                    { op: 'update_task', task: '#34', title: 'Cobrar Warley sobre acesso devops' },
+                  ],
+                }),
+              },
+            },
+          ],
+        });
+      },
+    },
+  );
+  assert.deepEqual(commands, [{ op: 'create_task', title: 'Cobrar Warley sobre acesso devops' }]);
+  // O modelo precisa saber quais candidatos já estão concluídos.
+  assert.match(
+    sistema,
+    /"id":"#34","title":"Lembrar Warley sobre o decola","groupId":null,"completed":true/,
+  );
+});

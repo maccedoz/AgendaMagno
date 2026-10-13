@@ -72,6 +72,10 @@ export type PendingField =
   | 'group'
   | 'deleteTasks'
   | 'entry'
+  | 'template'
+  | 'planItem'
+  | 'planKind'
+  | 'name'
   | 'category'
   | 'amount'
   | 'kind'
@@ -169,10 +173,18 @@ export const commandSchema = z
       'finance_delete',
       'finance_restore',
       'finance_list',
+      'finance_summary',
+      'finance_plan_create',
+      'finance_plan_update',
+      'finance_plan_delete',
+      'finance_plan_list',
+      'finance_list_templates',
+      'finance_use_template',
       'finance_create_template',
       'finance_update_template',
       'finance_delete_template',
       'finance_create_category',
+      'finance_list_categories',
       'finance_update_category',
       'finance_archive_category',
       'finance_restore_category',
@@ -211,11 +223,20 @@ export const commandSchema = z
     ]),
     entry: z.string().min(1).max(5000).optional(),
     template: z.string().min(1).max(200).optional(),
-    category: z.string().min(1).max(100).optional(),
+    planItem: z.string().min(1).max(100).optional(),
+    category: z.string().min(1).max(100).nullable().optional(),
     kind: z.enum(['income', 'expense']).optional(),
+    planKind: z.enum(['income', 'fixed', 'budget']).optional(),
     categoryKind: z.enum(['income', 'expense', 'both']).optional(),
     amount: z.string().min(1).max(40).optional(),
     date: dateSchema.optional(),
+    month: z
+      .string()
+      .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+      .optional(),
+    deleted: z.boolean().optional(),
+    archived: z.boolean().optional(),
+    breakdown: z.enum(['category', 'day']).optional(),
     confirmed: z.boolean().optional(),
     task: z.string().min(1).max(200).optional(),
     group: z.string().min(1).max(100).nullable().optional(),
@@ -268,7 +289,8 @@ export const commandSchema = z
   })
   .strict();
 export type Command = z.infer<typeof commandSchema>;
-export const commandsSchema = z.array(commandSchema).min(1).max(10);
+export const MAX_AI_COMMANDS = 10;
+export const commandsSchema = z.array(commandSchema).min(1).max(MAX_AI_COMMANDS);
 export const panelCommandsSchema = z.array(commandSchema).min(1).max(100);
 export class DomainError extends Error {
   constructor(

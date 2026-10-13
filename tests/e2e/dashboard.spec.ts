@@ -48,8 +48,12 @@ test('painel completo: login, grupo, tarefa, edição, conclusão, restauração
   await expect(page.getByRole('button', { name: 'Editar Revisar limites' })).toBeVisible();
   await page.getByRole('button', { name: 'Configurações', exact: true }).click();
   await page.getByLabel('Excluir após quantos dias?').fill('7');
+  // A tecla de envio vale na hora, sem depender de salvar as preferências.
+  await expect(page.getByLabel('Ctrl+Enter envia e Enter quebra a linha')).toBeChecked();
+  await page.getByLabel('Enter envia e Shift+Enter quebra a linha').check();
   await page.getByRole('button', { name: 'Salvar preferência' }).click();
   await page.getByRole('button', { name: 'Abrir assistente', exact: true }).click();
+  await expect(page.locator('.send-hint')).toContainText('Enter envia e Shift+Enter');
   await page.getByLabel('Sua mensagem').fill('Anota: Comprar pilhas');
   await page.getByRole('button', { name: 'Enviar mensagem' }).click();
   await expect(page.locator('.bubble.assistant').last()).toContainText('Comprar pilhas adicionada');
