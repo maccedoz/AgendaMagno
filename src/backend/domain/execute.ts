@@ -620,12 +620,14 @@ export function pendingAnswer(
   if (['amount', 'description', 'kind', 'target', 'name'].includes(p.field) && !p.options.length) {
     // O schema recusa acima de 40 caracteres em amount; sem esta checagem a resposta comprida
     // estourava como erro de validação e chegava como “não foi possível processar o pedido”.
+    // Quem reenvia a lista inteira (várias linhas, com o valor que faltava) não está respondendo
+    // à pergunta: é um pedido novo, e vai para a IA em vez de virar erro.
+    if ((p.field === 'amount' || p.field === 'target') && /\n/.test(text.trim())) return null;
     if ((p.field === 'amount' || p.field === 'target') && text.trim().length > 40)
       throw new DomainError('Responda só com o valor, como 42,90.');
     if (p.field === 'description' && text.trim().length > 5000)
       throw new DomainError('A descrição precisa ter até 5.000 caracteres.');
-    if (p.field === 'name' && text.trim().length > 100)
-      throw new DomainError('O nome precisa ter até 100 caracteres.');
+    if (p.field === 'name' && (text.trim().length > 100 || /\n/.test(text.trim()))) return null;
     const value =
       p.field === 'kind'
         ? ({ receita: 'income', despesa: 'expense' } as const)[

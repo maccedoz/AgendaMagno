@@ -450,3 +450,27 @@ test('nomes compostos reconhecem cada parte e ignoram partes ambíguas', () => {
   assert.equal(spent(net), 1000);
   assert.equal(spent(other), 0);
 });
+
+test('reenviar a lista inteira como resposta ao valor que faltava vira pedido novo, não erro', async () => {
+  const first = await chat(
+    'Pai\t450\nIC\t700\nPROAE\t\nAH\t100\nadicione isso como ganhos fixos',
+    randomUUID(),
+    database,
+    model([
+      { op: 'finance_plan_create', planKind: 'income', name: 'Pai', amount: '450' },
+      { op: 'finance_plan_create', planKind: 'income', name: 'PROAE' },
+    ]),
+  );
+  assert.equal(first.status, 'clarification');
+  const second = await chat(
+    'Pai\t450\nIC\t700\nPROAE\t436\nAH\t100\nadicione isso como ganhos fixos',
+    randomUUID(),
+    database,
+    model([
+      { op: 'finance_plan_create', planKind: 'income', name: 'Pai', amount: '450' },
+      { op: 'finance_plan_create', planKind: 'income', name: 'PROAE', amount: '436' },
+    ]),
+  );
+  assert.equal(second.status, 'done', second.error ?? undefined);
+  assert.equal((await financePlan({}, database)).items.length, 2);
+});
