@@ -111,10 +111,10 @@ export const isFinanceQuery = (c: Command) =>
 export const needsFinance = (c: Command) => isFinance(c) || c.op === 'week_summary';
 const kindLabel = (kind: 'income' | 'expense' | 'both') =>
   kind === 'both' ? 'receitas e despesas' : kind === 'income' ? 'receitas' : 'despesas';
-function required<T>(value: T | undefined, field: 'amount' | 'kind' | 'description') {
+function required<T>(value: T | undefined, field: 'amount' | 'kind') {
   if (value === undefined)
     throw new Ambiguity(
-      `Informe ${{ amount: 'o valor (ex.: 42,90)', kind: 'receita ou despesa', description: 'a descrição' }[field]} do lançamento.`,
+      `Informe ${{ amount: 'o valor (ex.: 42,90)', kind: 'receita ou despesa' }[field]} do lançamento.`,
       field,
       [],
     );
@@ -477,8 +477,7 @@ export function financeCommand(
       const kind = required(c.kind, 'kind');
       const cat = category(c.category, kind);
       if (cat.archivedAt) throw new DomainError('Escolha uma categoria ativa.');
-      const description = (c.description ?? c.name).trim();
-      if (!description) throw new DomainError('Informe a descrição.');
+      const description = (c.description?.trim() || c.name).trim();
       f.templates.push({
         id: randomUUID(),
         name: c.name.trim(),
@@ -512,8 +511,7 @@ export function financeCommand(
       item.categoryId = cat.id;
       if (c.amount !== undefined) item.amountCents = parseMoney(c.amount);
       if (c.description !== undefined) {
-        if (!c.description.trim()) throw new DomainError('Informe a descrição.');
-        item.description = c.description.trim();
+        item.description = c.description.trim() || item.name;
       }
       item.version++;
       item.updatedAt = at;
@@ -574,10 +572,10 @@ export function financeCommand(
   } else if (c.op === 'finance_create') {
     const kind = required(c.kind, 'kind');
     const amountCents = parseMoney(required(c.amount, 'amount'));
-    const description = required(c.description, 'description').trim();
-    if (!description) throw new DomainError('Informe a descrição.');
     const cat = category(c.category, kind);
     if (cat.archivedAt) throw new DomainError('Escolha uma categoria ativa.');
+    // A descrição é opcional: sem ela o lançamento leva o nome da categoria.
+    const description = c.description?.trim() || cat.name;
     const item: FinanceEntry = {
       id: randomUUID(),
       kind,
@@ -615,8 +613,7 @@ export function financeCommand(
       item.categoryId = cat.id;
       if (c.amount !== undefined) item.amountCents = parseMoney(c.amount);
       if (c.description !== undefined) {
-        if (!c.description.trim()) throw new DomainError('Informe a descrição.');
-        item.description = c.description.trim();
+        item.description = c.description.trim() || cat.name;
       }
       if (c.date) item.date = c.date;
     }

@@ -474,3 +474,16 @@ test('reenviar a lista inteira como resposta ao valor que faltava vira pedido no
   assert.equal(second.status, 'done', second.error ?? undefined);
   assert.equal((await financePlan({}, database)).items.length, 2);
 });
+
+test('despesa sem descrição não pergunta e usa o nome da categoria', async () => {
+  const result = await chat(
+    'Gastei 30 em alimentação',
+    randomUUID(),
+    database,
+    model([{ op: 'finance_create', kind: 'expense', amount: '30', category: 'Alimentação' }]),
+  );
+  assert.equal(result.status, 'done', result.error ?? undefined);
+  const entries = (await loadFinance(database)).entries;
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].description, 'Alimentação');
+});

@@ -784,10 +784,10 @@ function EntryEditor({
             value={date}
             onChange={(e) => setDate(e.target.value)}
           />
-          <label htmlFor="finance-description">Descrição do lançamento</label>
+          <label htmlFor="finance-description">Descrição do lançamento (opcional)</label>
           <textarea
             id="finance-description"
-            required
+            placeholder="Se ficar vazia, usa o nome da categoria"
             maxLength={5000}
             rows={3}
             value={description}
@@ -971,10 +971,10 @@ function TemplateEditor({
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
           />
-          <label htmlFor="template-description">Descrição padrão</label>
+          <label htmlFor="template-description">Descrição padrão (opcional)</label>
           <textarea
             id="template-description"
-            required
+            placeholder="Se ficar vazia, usa o nome do modelo"
             maxLength={5000}
             rows={2}
             value={description}
